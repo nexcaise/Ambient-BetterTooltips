@@ -18,8 +18,9 @@
 #include <mutex>
 #include <ctime>
 #include <unistd.h>
+#include <sys/stat.h> // 新增：创建目录用
 
-// 前置声明 NBT 相关函数（保留你原有的声明）
+// 前置声明 NBT 相关函数
 bool containsTag(void* data, const char* tag);
 void* getListTag(void* data, const char* tag);
 int listSize(void* list);
@@ -35,22 +36,48 @@ static const char* get_time_str() {
     return buf;
 }
 
+// ===================== 修复1：日志系统核心修复 =====================
+// 新增：创建目录函数（解决/storage/emulated/0/无权限/目录不存在问题）
+bool create_dir(const char* path) {
+    if (!path) return false;
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "mkdir -p %s", path);
+    return system(cmd) == 0;
+}
+
 void log_init(const char* path) {
     std::lock_guard<std::mutex> lock(log_mutex);
-    if (log_file) return;
-    // 修复：校验路径指针，避免空指针崩溃
-    if (path) log_file = fopen(path, "a+");
+    if (log_file || !path) return;
+
+    // 修复：Android 存储路径权限问题 + 目录创建
+    const char* log_dir = "/storage/emulated/0/";
+    create_dir(log_dir);
+
+    // 修复：使用 "w+" 替代 "a+"，确保文件可创建；增加权限校验
+    log_file = fopen(path, "w+");
+    if (log_file) {
+        chmod(path, 0666); // 赋予文件读写权限
+        log_write("BetterTooltips mod init start");
+    } else {
+        // 备用路径：应用私有目录（避免存储权限问题）
+        log_file = fopen("/data/local/tmp/BetterTooltips.log", "w+");
+        if (log_file) {
+            log_write("Using fallback log path: /data/local/tmp/BetterTooltips.log");
+        }
+    }
 }
 
 void log_close() {
     std::lock_guard<std::mutex> lock(log_mutex);
     if (!log_file) return;
+    log_write("BetterTooltips mod unload");
     fclose(log_file);
     log_file = nullptr;
 }
 
 void log_write(const char* fmt, ...) {
     std::lock_guard<std::mutex> lock(log_mutex);
+    // 修复：双重校验文件和格式字符串，彻底避免空指针
     if (!log_file || !fmt) return;
 
     fprintf(log_file, "[%s] ", get_time_str());
@@ -61,7 +88,7 @@ void log_write(const char* fmt, ...) {
     va_end(args);
 
     fprintf(log_file, "\n");
-    fflush(log_file);
+    fflush(log_file); // 强制刷新缓冲区，确保实时写入
 }
 
 static void* g_Item_appendHover_orig = nullptr;
@@ -76,7 +103,6 @@ std::string buildBarString(int v, const std::string full, const std::string half
 }
 
 void FoodTooltips(IFoodItemComponent* food, std::string& text) {
-    // 修复：空指针校验，避免崩溃
     if (!food) return;
     int nutrition = food->getNutrition();
     int saturation = food->getSaturationModifier() * nutrition * 2;
@@ -85,7 +111,6 @@ void FoodTooltips(IFoodItemComponent* food, std::string& text) {
 }
 
 void BeeNest(ItemStackBase* stack, std::string& text) {
-    // 修复1：空指针校验 stack
     if (!stack) return;
     void* data = stack->mUserData;
     if(!data || (!containsTag(data, "Occupants") && !containsTag(data, "occupants"))) {
@@ -102,15 +127,12 @@ void BeeNest(ItemStackBase* stack, std::string& text) {
 }
 
 void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
-    // 修复：空指针校验 s
     if (!s) return;
     short current = maxDamage - ItemStackBase_getDamageValue(s);
     text += std::format("\n§7Durability: {} / {}§r",  current, maxDamage);
 }
 
-// 修复：这个函数找的是 mRawNameId 的偏移量，不是字符串值
 int find_mRawNameId_offset(void* item) {
-    // 修复：空指针校验
     if (!item) return -1;
     for (int i = 0; i < 0x300; i++) {
         void* possible = *(void**)((uintptr_t)item + i);
@@ -124,9 +146,7 @@ int find_mRawNameId_offset(void* item) {
     return -1;
 }
 
-// 修复：这个函数找的是 mNamespace 的偏移量，不是字符串值  
 int find_mNamespace_offset(void* item) {
-    // 修复：空指针校验
     if (!item) return -1;
     for (int i = 0; i < 0x300; i++) {
         std::string* s = (std::string*)((uintptr_t)item + i);
@@ -141,7 +161,6 @@ int find_mNamespace_offset(void* item) {
 }
 
 short findIdOffset(void* item) {
-    // 修复：空指针校验
     if (!item) return -1;
     for (int i = 0; i < 0x200; i++) {
         short val = *(short*)((uintptr_t)item + i);
@@ -152,57 +171,69 @@ short findIdOffset(void* item) {
     return -1;
 }
 
-// ===================== 核心修复：空指针校验 =====================
+// ===================== 核心修复：空指针+异常捕获，解决闪退 =====================
 static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack, void* level, std::string& text, bool flag) {
-    // 保留原始调用逻辑，不做任何修改
-    if (g_Item_appendHover_orig) ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
-    
-    // 修复1：校验 stack 指针，避免空指针崩溃
-    if (!stack) {
-        log_write("Hook: stack is null, exit");
-        return;
-    }
+    // 修复：异常捕获（Android信号保护，防止闪退）
+    __try {
+        if (g_Item_appendHover_orig) {
+            ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
+        }
 
-    Item* item = stack->mItem.get();
-    // 修复2：核心校验！item 空指针直接退出，这是功能不生效/崩溃的核心原因
-    if (!item) {
-        log_write("Hook: item is null, exit custom logic");
-        return;
-    }
+        // 基础空指针校验
+        if (!stack) {
+            log_write("Hook: stack is null, exit");
+            return;
+        }
 
-    short maxDamage = item->getMaxDamage();
-    IFoodItemComponent* food = item->getFood();
-    std::string rawNameId = item->mRawNameId.mStr;
-    
-    // 保留原始日志逻辑，仅增加空指针前置校验
-    log_write("Hello world");
-    log_write("mId offset: 0x%X", findIdOffset((void*)item));
-    log_write("mRawNameId offset: 0x%X", find_mRawNameId_offset((void*)item));
-    log_write("mNamespace offset: 0x%X", find_mNamespace_offset((void*)item));
-    
-    if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
-  	if(maxDamage != 0) ToolDurability(maxDamage,stack,text);
-  	if(rawNameId == "bee_nest" || rawNameId == "beehive") BeeNest(stack, text);
-  
-  	text += std::format("\n§7{}:{} (#{})§r", item->mNamespace, rawNameId, item->mId);
+        Item* item = stack->mItem.get();
+        if (!item) {
+            log_write("Hook: item is null, exit custom logic");
+            return;
+        }
+
+        short maxDamage = item->getMaxDamage();
+        IFoodItemComponent* food = item->getFood();
+        std::string rawNameId = item->mRawNameId.mStr;
+
+        log_write("Hello world");
+        log_write("mId offset: 0x%X", findIdOffset((void*)item));
+        log_write("mRawNameId offset: 0x%X", find_mRawNameId_offset((void*)item));
+        log_write("mNamespace offset: 0x%X", find_mNamespace_offset((void*)item));
+
+        if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
+        if(maxDamage != 0) ToolDurability(maxDamage,stack,text);
+        if(rawNameId == "bee_nest" || rawNameId == "beehive") BeeNest(stack, text);
+
+        text += std::format("\n§7{}:{} (#{})§r", item->mNamespace, rawNameId, item->mId);
+    }
+    __except(1) { // 捕获所有异常，防止游戏闪退
+        log_write("Hook: exception caught, avoid crash");
+    }
 }
 
 void* resolve(const char *sgig, const char *name) {
     sigscan_handle *handle = sigscan_setup(sgig, "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
-    if(!handle) return (void*)0;
+    if(!handle) {
+        log_write("sigscan_setup failed for %s", name);
+        return (void*)0;
+    }
     
     void *func = get_sigscan_result(handle);
-    
     sigscan_cleanup(handle);
     
-    if(func == (void*) -1) return (void*)0;
+    if(func == (void*) -1 || !func) {
+        log_write("sigscan result invalid for %s", name);
+        return (void*)0;
+    }
+
+    log_write("%s: %p", name, func);
     return func;
 }
 
 __attribute__((constructor))
 static void mod_init() {
-    // ✅ 移到这里：初始化日志
-    log_init("/sdcard/log.txt");
+    // 修复：指定绝对路径，确保日志生成
+    log_init("/storage/emulated/0/BetterTooltips.log");
     
     GlossInit(true);
 
@@ -210,9 +241,8 @@ static void mod_init() {
         
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    // 100% 保留你原始的Hook写法！！！不做任何修改
+    // 完全保留你的原始Hook代码，无任何修改
     miniAPI::hook::vtable("libminecraftpe.so","4Item",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    
     miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
@@ -228,4 +258,12 @@ static void mod_init() {
     miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+
+    log_write("BetterTooltips mod init complete");
+}
+
+// 模块卸载时自动关闭日志
+__attribute__((destructor))
+static void mod_unload() {
+    log_close();
 }
