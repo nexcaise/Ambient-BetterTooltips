@@ -13,6 +13,55 @@
 #include "item/itemstackbase.h"
 #include "item/IFoodItemComponent.h"
 
+
+#include <cstdio>
+#include <cstdarg>
+#include <mutex>
+#include <ctime>
+#include <unistd.h>
+
+static std::mutex log_mutex;
+static FILE* log_file = nullptr;
+
+static const char* get_time_str() {
+    static char buf[64];
+    time_t t = time(nullptr);
+    tm* tm_info = localtime(&t);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
+    return buf;
+}
+
+void log_init(const char* path) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    if (log_file) return;
+    log_file = fopen(path, "a+");
+}
+
+void log_close() {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    if (!log_file) return;
+    fclose(log_file);
+    log_file = nullptr;
+}
+
+void log_write(const char* fmt, ...) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    if (!log_file) return;
+
+    fprintf(log_file, "[%s] ", get_time_str());
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(log_file, fmt, args);
+    va_end(args);
+
+    fprintf(log_file, "\n");
+    fflush(log_file);
+}
+
+log_init("/sdcard/log.txt");
+
+
 static void* g_Item_appendHover_orig = nullptr;
 using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
 
@@ -51,15 +100,56 @@ void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
     text += std::format("\n§7Durability: {} / {}§r",  current, maxDamage);
 }
 
+int find_mRawNameId(void* item) {
+    for (int i = 0; i < 0x300; i++) {
+        void* possible = *(void**)((uintptr_t)item + i);
+        if (!possible) continue;
+
+        const char* str = *(const char**)possible;
+        if (str && strcmp(str, "diamond_pickaxe") == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int find_mNamespace(void* item) {
+    for (int i = 0; i < 0x300; i++) {
+        std::string* s = (std::string*)((uintptr_t)item + i);
+        if (!s) continue;
+
+        const char* c = s->c_str();
+        if (c && strcmp(c, "minecraft") == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+short findIdOffset(void* item) {
+    for (int i = 0; i < 0x200; i++) {
+        short val = *(short*)((uintptr_t)item + i);
+        if (val > 0 && val < 10000) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack, void* level, std::string& text, bool flag) {
-    text += "Berhasil\n";
     if (g_Item_appendHover_orig) ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
-    text += "\nBerhasil";
     
     Item* item = stack->mItem.get();
     short maxDamage = item->getMaxDamage();
     IFoodItemComponent* food = item->getFood();
     std::string rawNameId = item->mRawNameId.mStr;
+    
+    
+    
+    log_write("Hello world");
+    log_write("mId offset: 0x%X", findIdOffset((void*)item));
+    log_write("Namespace full: %s", find_mRawNameId((void*)item).c_str());
+    log_write("Namespace: %s", find_mNamespace((void*)item).c_str());
     
     if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
   	if(maxDamage != 0) ToolDurability(maxDamage,stack,text);
