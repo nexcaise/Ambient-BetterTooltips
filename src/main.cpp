@@ -142,20 +142,20 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
     Item* item = stack->mItem.get();
     short maxDamage = item->getMaxDamage();
     IFoodItemComponent* food = item->getFood();
-    std::string rawNameId = item->mRawNameId.mStr;
-    
-    
-    
-    log_write("Hello world");
-    log_write("mId offset: 0x%X", findIdOffset((void*)item));
-    log_write("Namespace full: %s", find_mRawNameId((void*)item).c_str());
-    log_write("Namespace: %s", find_mNamespace((void*)item).c_str());
+    std::string rawNameId = getItemRawNameId((void*)item);
     
     if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
-  	if(maxDamage != 0) ToolDurability(maxDamage,stack,text);
+  	if(maxDamage != 0) ToolDurability(maxDamage, stack, text);
   	if(rawNameId == "bee_nest" || rawNameId == "beehive") BeeNest(stack, text);
-  
-  	text += std::format("\n§7{}:{} (#{})§r", item->mNamespace, rawNameId, item->mId);
+
+    std::string ns = getItemNamespace((void*)item);
+    short id = getItemId((void*)item);
+    if (!ns.empty() || !rawNameId.empty()) {
+        if (id > 0)
+            text += std::format("\n§7{}:{} (#{})§r", ns, rawNameId, id);
+        else
+            text += std::format("\n§7{}:{}§r", ns, rawNameId);
+    }
 }
 
 void* resolve(const char *sgig, const char *name) {
@@ -178,21 +178,51 @@ static void mod_init() {
         
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    miniAPI::hook::vtable("libminecraftpe.so","4Item",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    
-    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    // --- Hook appendFormattedHovertext ---
+    // Primary method: miniAPI::hook::vtable (proven working for subclasses).
+    // Additionally try to patch _ZTV4Item directly via GlossSymbol + WriteMemory
+    // to cover plain Item instances (food items) that miniAPI can't hook.
+
+    // Step 1: Try to manually patch Item's own vtable (for food items / plain Item)
+    GHandle lib = GlossOpen("libminecraftpe.so");
+    if (lib) {
+        uintptr_t item_vt = GlossSymbol(lib, "_ZTV4Item", nullptr);
+        if (item_vt) {
+            void** entries = reinterpret_cast<void**>(item_vt);
+            void* orig = entries[2 + 55];
+            if (orig) {
+                g_Item_appendHover_orig = orig;
+                void* hook_func = (void*)Item_appendFormattedHovertext_hook;
+                WriteMemory(&entries[2 + 55], &hook_func, sizeof(void*), true);
+                log_write("Patched _ZTV4Item slot 55, orig=%p", orig);
+            }
+        } else {
+            log_write("_ZTV4Item not found, food items won't have custom tooltips");
+        }
+        GlossClose(lib, false);
+    }
+
+    // Step 2: Hook concrete subclasses via miniAPI (always works).
+    // First hook saves orig if step 1 failed; otherwise uses tmp.
+    if (!g_Item_appendHover_orig) {
+        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    } else {
+        void* tmp = nullptr;
+        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    }
+    void* tmp = nullptr;
+    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
 }

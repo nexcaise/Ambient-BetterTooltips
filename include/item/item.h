@@ -1,14 +1,8 @@
 #pragma once
 
 #include "item/IFoodItemComponent.h"
-#include "item/hashedstring.h"
 
 class Item {
-public:
-    HashedString mRawNameId;
-    std::string mNamespace;
-    short mId;
-
 public:
     virtual ~Item();
     virtual void vfunc1()  = 0;
