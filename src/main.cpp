@@ -4,6 +4,9 @@
 #include <format>
 #include <string>
 #include <miniAPI.h>
+#include <nise/stub.h>
+#include <memscan.h>
+#include <inlinehook.h>
 
 #include "nbt/nbt.h"
 #include "item/item.h"
@@ -67,13 +70,13 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
 
 void* resolve(const char *sgig, const char *name) {
     sigscan_handle *handle = sigscan_setup(sgig, "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
-    if(!scannersiji) return;
+    if(!scannersiji) return (void*)0;
     
     void *func = get_sigscan_result(handle);
     
     sigscan_cleanup(handle);
     
-    if(func == (void*) -1) return;
+    if(func == (void*) -1) return (void*)0;
     return func;
 }
 
