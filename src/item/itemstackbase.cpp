@@ -1,3 +1,3 @@
 #include "item/itemstackbase.h"
 
-// ItemStackBase implementation placeholder
+ItemStackBase_getDamageValue_t ItemStackBase_getDamageValue = nullptr;

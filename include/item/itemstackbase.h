@@ -27,4 +27,7 @@ public:
     virtual std::string toDebugString() const;
 };
 
+using ItemStackBase_getDamageValue_t = short (*)(ItemStackBase*);
+extern ItemStackBase_getDamageValue_t ItemStackBase_getDamageValue;
+
 static_assert(sizeof(ItemStackBase) == 0x88, "Incorrect ItemStackBase size");
