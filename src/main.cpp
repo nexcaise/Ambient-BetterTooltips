@@ -138,21 +138,14 @@ static int findRawNameIdStrOffset(void* item, int nsOffset) {
 }
 
 static int findIdOffset(void* item, int hashedStringOffset) {
-    // mId (short) is typically right before the HashedString, with possible alignment padding
-    for (int delta = 2; delta <= 16; delta += 2) {
+    // mId (short) is before the HashedString, but there may be other fields
+    // in between (not just zero padding). Search a wider range for a plausible ID.
+    for (int delta = 2; delta <= 64; delta += 2) {
         int off = hashedStringOffset - delta;
         if (off < 8) break;
         short val = *reinterpret_cast<short*>((uintptr_t)item + off);
         if (val > 0 && val < 2000) {
-            // Verify bytes between mId end and HashedString start are zero (padding)
-            bool padded = true;
-            for (int j = off + 2; j < hashedStringOffset; j++) {
-                if (*reinterpret_cast<uint8_t*>((uintptr_t)item + j) != 0) {
-                    padded = false;
-                    break;
-                }
-            }
-            if (padded) return off;
+            return off;
         }
     }
     return -1;
@@ -219,7 +212,7 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
     std::string ns = getItemNamespace((void*)item);
     short id = getItemId((void*)item);
     if (!ns.empty() || !rawNameId.empty()) {
-        if (id >= 0)
+        if (id > 0)
             text += std::format("\n§7{}:{} (#{})§r", ns, rawNameId, id);
         else
             text += std::format("\n§7{}:{}§r", ns, rawNameId);
@@ -247,38 +240,78 @@ static void mod_init() {
         
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    // Use inline hook on Item::appendFormattedHovertext to cover ALL items
-    // (including food, plain Item instances, and any subclass).
-    // Find the function address by reading a concrete subclass's vtable.
+    // Hook appendFormattedHovertext by directly patching vtable entries.
+    // Unlike inline hooking, this keeps the original function body intact —
+    // g_Item_appendHover_orig is the real function address (no trampoline),
+    // so calling it reliably preserves vanilla behavior (attack damage, etc.).
+    //
+    // Strategy: read vtable slot 55 from many subclasses, find the most
+    // common function address (base Item implementation), then patch ALL
+    // vtable entries that point to it.
     GHandle lib = GlossOpen("libminecraftpe.so");
     if (lib) {
-        // Try multiple classes in case one fails to resolve
         static const char* vtable_syms[] = {
-            "_ZTV9BrushItem", "_ZTV9BlockItem", "_ZTV10DiggerItem", nullptr
+            "_ZTV4Item",
+            "_ZTV9BrushItem", "_ZTV9BlockItem", "_ZTV10DiggerItem",
+            "_ZTV7BowItem", "_ZTV7HoeItem", "_ZTV10ShovelItem",
+            "_ZTV10ShearsItem", "_ZTV10ShieldItem", "_ZTV11TridentItem",
+            "_ZTV11PickaxeItem", "_ZTV8MaceItem", "_ZTV12CrossbowItem",
+            "_ZTV17FlintAndSteelItem", "_ZTV14FishingRodItem",
+            "_ZTV18CarrotOnAStickItem",
+            nullptr
         };
-        void* target = nullptr;
-        for (int i = 0; vtable_syms[i] && !target; i++) {
-            uintptr_t vtable_addr = GlossSymbol(lib, vtable_syms[i], nullptr);
-            if (vtable_addr) {
-                // vtable layout: [offset-to-top][typeinfo][vfunc0][vfunc1]...
-                // vptr points past the 2 header entries, slot 55 from vptr = index 57
-                void** vt = reinterpret_cast<void**>(vtable_addr);
-                target = vt[2 + 55];
+
+        uintptr_t vtables[16] = {};
+        void* addrs[16] = {};
+        int count = 0;
+
+        for (int i = 0; vtable_syms[i] && count < 16; i++) {
+            uintptr_t vt = GlossSymbol(lib, vtable_syms[i], nullptr);
+            if (vt) {
+                void** entries = reinterpret_cast<void**>(vt);
+                void* func = entries[2 + 55];
+                if (func) {
+                    log_write("vtable %s slot 55 -> %p", vtable_syms[i], func);
+                    vtables[count] = vt;
+                    addrs[count] = func;
+                    count++;
+                }
             }
         }
-        if (target) {
-            GlossHook(target, (void*)Item_appendFormattedHovertext_hook, &g_Item_appendHover_orig);
-            log_write("Inline hooked appendFormattedHovertext at %p", target);
-        } else {
-            log_write("Failed to find appendFormattedHovertext, falling back to vtable hooks");
-            // Fallback: hook individual subclasses (won't cover plain Item/food)
-            miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-            void* tmp = nullptr;
-            miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-            miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-            miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-            miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+
+        // Find the most common address (base Item::appendFormattedHovertext)
+        void* base_func = nullptr;
+        int best_freq = 0;
+        for (int i = 0; i < count; i++) {
+            int freq = 0;
+            for (int j = 0; j < count; j++) {
+                if (addrs[j] == addrs[i]) freq++;
+            }
+            if (freq > best_freq) {
+                best_freq = freq;
+                base_func = addrs[i];
+            }
         }
+
+        if (base_func) {
+            // Save the real original function pointer (direct address, no trampoline)
+            g_Item_appendHover_orig = base_func;
+            void* hook_func = (void*)Item_appendFormattedHovertext_hook;
+
+            // Patch every vtable that uses the base function
+            int patched = 0;
+            for (int i = 0; i < count; i++) {
+                if (addrs[i] == base_func) {
+                    void** entries = reinterpret_cast<void**>(vtables[i]);
+                    WriteMemory(&entries[2 + 55], &hook_func, sizeof(void*), true);
+                    patched++;
+                }
+            }
+            log_write("Patched %d/%d vtables, base func=%p", patched, count, base_func);
+        } else {
+            log_write("Failed to find appendFormattedHovertext");
+        }
+
         GlossClose(lib, false);
     }
 }
