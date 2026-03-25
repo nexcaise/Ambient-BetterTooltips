@@ -22,14 +22,13 @@ jobs:
         with:
           xmake-version: latest
 
-      - name: Clone NiseAPI
+      - name: Clone NiseAPI（含子模块）
         run: |
-          git clone https://github.com/Lodingglue/nise-api.git niseAPI
-          
+          git clone --recursive --depth 1 https://github.com/Lodingglue/nise-api.git niseAPI
 
       - name: Clone MiniAPI
         run: |
-          git clone https://github.com/NexCaise/Ambient-MiniAPI.git miniAPI
+          git clone --depth 1 https://github.com/NexCaise/Ambient-MiniAPI.git miniAPI
 
       - name: Configure and Build
         run: |
