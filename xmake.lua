@@ -9,12 +9,15 @@ add_repositories(
     "xmake-repo https://github.com/xmake-io/xmake-repo.git"
 )
 
+add_requires("nlohmann_json")
+
 
 target("BetterTooltips")
     set_kind("shared")
     add_linkdirs("niseAPI/libs/arm64-v8a")
     add_linkdirs("miniAPI/libs/arm64-v8a")
     add_links("nise", "log", "miniAPI", "GlossHook")
+    add_packages("nlohmann_json")
 
     add_files("src/*.cpp", "src/**/*.cpp", "niseAPI/deps/gamepwnage/src/*.c", "niseAPI/deps/gamepwnage/src/**/*.c")
 
