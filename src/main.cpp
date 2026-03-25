@@ -106,7 +106,7 @@ void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
 //   ... [mId: short] [padding] [mRawNameId: HashedString(40)] [mNamespace: std::string(24)] ...
 // HashedString = { uint64_t hash(8), std::string str(24), HashedString* lastMatch(8) }
 static int off_mNamespace = -1;
-static int off_mRawNameIdStr = -1;   // offset to std::string inside the HashedString
+static int off_mRawNameIdStr = -1;   // offset to raw char data of the item name
 static int off_mId = -1;
 static bool offsets_found = false;
 static int discovery_attempts = 0;
@@ -168,23 +168,31 @@ static void tryDiscoverOffsets(void* item) {
     off_mNamespace = ns;
     off_mRawNameIdStr = findRawNameIdStrOffset(item, ns);
 
-    int hsOffset = ns - 40; // start of HashedString
-    if (hsOffset >= 8)
-        off_mId = findIdOffset(item, hsOffset);
+    // Estimate HashedString start from rawNameId char position:
+    // In libc++ SSO, chars are at string_object+1, string is at HashedString+8
+    // So chars are at HashedString+9, meaning HashedString ~= chars - 9
+    // Align down to 8 bytes for struct alignment on ARM64
+    if (off_mRawNameIdStr > 0) {
+        int hsStart = (off_mRawNameIdStr - 9) & ~7;
+        if (hsStart >= 8)
+            off_mId = findIdOffset(item, hsStart);
+    }
 
     offsets_found = true;
     log_write("Offsets discovered: mNamespace=0x%X mRawNameIdStr=0x%X mId=0x%X",
               off_mNamespace, off_mRawNameIdStr, off_mId);
 }
 
+// Offsets point to raw char data (inside SSO buffers), not std::string objects.
+// Read directly as C strings to avoid misinterpreting SSO layout.
 static std::string getItemNamespace(void* item) {
     if (off_mNamespace < 0) return "";
-    return *reinterpret_cast<std::string*>((uintptr_t)item + off_mNamespace);
+    return reinterpret_cast<const char*>((uintptr_t)item + off_mNamespace);
 }
 
 static std::string getItemRawNameId(void* item) {
     if (off_mRawNameIdStr < 0) return "";
-    return *reinterpret_cast<std::string*>((uintptr_t)item + off_mRawNameIdStr);
+    return reinterpret_cast<const char*>((uintptr_t)item + off_mRawNameIdStr);
 }
 
 static short getItemId(void* item) {
