@@ -4,9 +4,9 @@
 #include <format>
 #include <string>
 #include <miniAPI.h>
+#include <Gloss.h>
 #include <nise/stub.h>
 #include <memscan.h>
-#include <inlinehook.h>
 
 #include "nbt/nbt.h"
 #include "item/item.h"
@@ -247,23 +247,38 @@ static void mod_init() {
         
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    // NOTE: Can't hook "4Item" - Item is abstract (has pure virtuals), so its vtable
-    // symbol (_ZTV4Item) may not exist in the binary. Hook concrete subclasses instead.
-    // For complete coverage of ALL items, consider inline hooking appendFormattedHovertext
-    // by finding its address via sig scanning and using GlossHook.
-    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    // Use inline hook on Item::appendFormattedHovertext to cover ALL items
+    // (including food, plain Item instances, and any subclass).
+    // Find the function address by reading a concrete subclass's vtable.
+    GHandle lib = GlossOpen("libminecraftpe.so");
+    if (lib) {
+        // Try multiple classes in case one fails to resolve
+        static const char* vtable_syms[] = {
+            "_ZTV9BrushItem", "_ZTV9BlockItem", "_ZTV10DiggerItem", nullptr
+        };
+        void* target = nullptr;
+        for (int i = 0; vtable_syms[i] && !target; i++) {
+            uintptr_t vtable_addr = GlossSymbol(lib, vtable_syms[i], nullptr);
+            if (vtable_addr) {
+                // vtable layout: [offset-to-top][typeinfo][vfunc0][vfunc1]...
+                // vptr points past the 2 header entries, slot 55 from vptr = index 57
+                void** vt = reinterpret_cast<void**>(vtable_addr);
+                target = vt[2 + 55];
+            }
+        }
+        if (target) {
+            GlossHook(target, (void*)Item_appendFormattedHovertext_hook, &g_Item_appendHover_orig);
+            log_write("Inline hooked appendFormattedHovertext at %p", target);
+        } else {
+            log_write("Failed to find appendFormattedHovertext, falling back to vtable hooks");
+            // Fallback: hook individual subclasses (won't cover plain Item/food)
+            miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+            void* tmp = nullptr;
+            miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+            miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+            miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+            miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+        }
+        GlossClose(lib, false);
+    }
 }
