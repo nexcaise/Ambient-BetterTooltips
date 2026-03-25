@@ -70,7 +70,7 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
 
 void* resolve(const char *sgig, const char *name) {
     sigscan_handle *handle = sigscan_setup(sgig, "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
-    if(!scannersiji) return (void*)0;
+    if(!handle) return (void*)0;
     
     void *func = get_sigscan_result(handle);
     
