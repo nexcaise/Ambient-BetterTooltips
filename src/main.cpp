@@ -62,6 +62,37 @@ void log_write(const char* fmt, ...) {
 static void* g_Item_appendHover_orig = nullptr;
 using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
 
+// Function pointers for item attributes (resolved via signature scan)
+using Item_getAttackDamage_t = float (*)(void*);
+static Item_getAttackDamage_t Item_getAttackDamage = nullptr;
+
+using ArmorItem_getArmorValue_t = int (*)(void*);
+static ArmorItem_getArmorValue_t ArmorItem_getArmorValue = nullptr;
+
+using ArmorItem_getToughnessValue_t = int (*)(void*);
+static ArmorItem_getToughnessValue_t ArmorItem_getToughnessValue = nullptr;
+
+// Generic vtable function caller - calls a virtual function by index
+template<typename Ret, typename... Args>
+static Ret callVfunc(void* obj, int vtableIndex, Args... args) {
+    if (!obj) return Ret{};
+    
+    void** vtable = *reinterpret_cast<void***>(obj);
+    if (!vtable) return Ret{};
+    
+    void* func = vtable[vtableIndex];
+    if (!func) return Ret{};
+    
+    return reinterpret_cast<Ret(*)(void*, Args...)>(func)(obj, args...);
+}
+
+// Attack damage vtable index - needs to be discovered or known
+static int g_AttackDamageVtableIndex = -1;
+
+// Armor value vtable indices - for ArmorItem
+static int g_ArmorValueVtableIndex = -1;
+static int g_ToughnessVtableIndex = -1;
+
 std::string buildBarString(int v, const std::string full, const std::string half) {
     std::string out;
     for (int i = 0; i < (int)v; i+=2) out += full; // 
@@ -70,11 +101,60 @@ std::string buildBarString(int v, const std::string full, const std::string half
     return out;
 }
 
+// Food component vtable indices - discovered at runtime
+static int g_NutritionVtableIndex = -1;
+static int g_SaturationVtableIndex = -1;
+static bool g_FoodVtableDiscovered = false;
+
 void FoodTooltips(IFoodItemComponent* food, std::string& text) {
-    int nutrition = food->getNutrition();
-    int saturation = food->getSaturationModifier() * nutrition * 2;
-    if(nutrition > 0) text += std::format("\n{} ({})", buildBarString(nutrition, "", ""), nutrition);
-    if(saturation > 0) text += std::format("\n{} ({})", buildBarString(saturation, "", ""), saturation);
+    if (!food) return;
+    
+    int nutrition = 0;
+    float saturation = 0.0f;
+    
+    // Try direct virtual call first
+    nutrition = food->getNutrition();
+    saturation = food->getSaturationModifier();
+    
+    // If direct call returns 0, try discovered vtable indices
+    if (nutrition == 0 && !g_FoodVtableDiscovered) {
+        // Try to discover the correct vtable indices
+        // Nutrition typically ranges 1-8, saturation is a float 0.0-1.2
+        for (int idx = 1; idx < 10; idx++) {
+            int val = callVfunc<int>((void*)food, idx);
+            if (val > 0 && val <= 20) {
+                // Could be nutrition
+                g_NutritionVtableIndex = idx;
+                // Check next index for saturation
+                float satVal = callVfunc<float>((void*)food, idx + 1);
+                if (satVal > 0.0f && satVal <= 2.0f) {
+                    g_SaturationVtableIndex = idx + 1;
+                    break;
+                }
+            }
+        }
+        g_FoodVtableDiscovered = true;
+        
+        if (g_NutritionVtableIndex >= 0) {
+            log_write("Discovered Food vtable indices: nutrition=%d, saturation=%d", 
+                      g_NutritionVtableIndex, g_SaturationVtableIndex);
+        }
+    }
+    
+    // Use discovered indices if direct call failed
+    if (nutrition == 0 && g_NutritionVtableIndex >= 0) {
+        nutrition = callVfunc<int>((void*)food, g_NutritionVtableIndex);
+        saturation = g_SaturationVtableIndex >= 0 ? 
+                     callVfunc<float>((void*)food, g_SaturationVtableIndex) : 0.0f;
+    }
+    
+    int saturationDisplay = saturation * nutrition * 2;
+    if (nutrition > 0) {
+        text += std::format("\n§eNutrition: {}§r", nutrition);
+    }
+    if (saturationDisplay > 0) {
+        text += std::format("\n§6Saturation: {}§r", saturationDisplay);
+    }
 }
 
 void BeeNest(ItemStackBase* stack, std::string& text) {
@@ -95,6 +175,118 @@ void BeeNest(ItemStackBase* stack, std::string& text) {
 void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
     short current = maxDamage - ItemStackBase_getDamageValue(s);
     text += std::format("\n§7Durability: {} / {}§r",  current, maxDamage);
+}
+
+// Forward declarations for runtime offset discovery
+static std::string getItemRawNameId(void* item);
+
+void AttackDamage(void* item, std::string& text) {
+    // Try function pointer first (if resolved via signature)
+    if (Item_getAttackDamage) {
+        float damage = Item_getAttackDamage(item);
+        if (damage > 1.0f) {
+            text += std::format("\n§cAttack Damage: {}§r", damage);
+        }
+        return;
+    }
+    
+    // Try vtable call with discovered or known index
+    // Common vtable indices for getAttackDamage in MCBE:
+    // Index varies by version, try common values
+    static bool index_discovered = false;
+    static int working_index = -1;
+    
+    if (!index_discovered) {
+        // Try to find the correct vtable index by checking for reasonable values
+        // Attack damage for most weapons is between 1.0 and 12.0
+        for (int idx = 36; idx < 60; idx++) {
+            float damage = callVfunc<float>(item, idx);
+            if (damage > 0.5f && damage < 20.0f) {
+                // Found a plausible value
+                working_index = idx;
+                break;
+            }
+        }
+        index_discovered = true;
+        if (working_index >= 0) {
+            log_write("Discovered AttackDamage vtable index: %d", working_index);
+        }
+    }
+    
+    if (working_index >= 0) {
+        float damage = callVfunc<float>(item, working_index);
+        if (damage > 1.0f) {
+            text += std::format("\n§cAttack Damage: {}§r", damage);
+        }
+    }
+}
+
+// Helper to check if item is an ArmorItem by checking vtable
+static bool isArmorItem(void* item) {
+    std::string rawNameId = getItemRawNameId(item);
+    return rawNameId.find("helmet") != std::string::npos ||
+           rawNameId.find("chestplate") != std::string::npos ||
+           rawNameId.find("leggings") != std::string::npos ||
+           rawNameId.find("boots") != std::string::npos;
+}
+
+void ArmorValue(void* item, std::string& text) {
+    // Check if this is an armor item
+    if (!isArmorItem(item)) return;
+    
+    // Try function pointer first (if resolved via signature)
+    if (ArmorItem_getArmorValue) {
+        int armor = ArmorItem_getArmorValue(item);
+        int toughness = ArmorItem_getToughnessValue ? ArmorItem_getToughnessValue(item) : 0;
+        
+        if (armor > 0) {
+            text += std::format("\n§9Armor: {}§r", armor);
+        }
+        if (toughness > 0) {
+            text += std::format("\n§bArmor Toughness: {}§r", toughness);
+        }
+        return;
+    }
+    
+    // Try vtable call with discovered or known index
+    static bool index_discovered = false;
+    static int armor_index = -1;
+    static int toughness_index = -1;
+    
+    if (!index_discovered) {
+        // Try to find the correct vtable indices
+        // Armor values range from 1-8 for different pieces
+        // Toughness ranges from 0-3 (diamond/netherite only)
+        for (int idx = 36; idx < 70; idx++) {
+            int val = callVfunc<int>(item, idx);
+            if (val > 0 && val <= 8) {
+                // Could be armor value
+                armor_index = idx;
+                // Check next index for toughness
+                int nextVal = callVfunc<int>(item, idx + 1);
+                if (nextVal >= 0 && nextVal <= 3) {
+                    toughness_index = idx + 1;
+                }
+                break;
+            }
+        }
+        index_discovered = true;
+        if (armor_index >= 0) {
+            log_write("Discovered Armor vtable indices: armor=%d, toughness=%d", armor_index, toughness_index);
+        }
+    }
+    
+    if (armor_index >= 0) {
+        int armor = callVfunc<int>(item, armor_index);
+        int toughness = toughness_index >= 0 ? callVfunc<int>(item, toughness_index) : 0;
+        
+        if (armor > 0) {
+            text += std::format("\n§9Armor: {}§r", armor);
+        }
+        if (toughness > 0) {
+            text += std::format("\n§bArmor Toughness: {}§r", toughness);
+        }
+    }
 }
 
 // --- Item field offset discovery ---
@@ -195,7 +387,7 @@ static short getItemId(void* item) {
 
 static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack, void* level, std::string& text, bool flag) {
     if (g_Item_appendHover_orig) ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
-    
+
     Item* item = stack->mItem.get();
     if (!item) return;
 
@@ -204,11 +396,35 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
     short maxDamage = item->getMaxDamage();
     IFoodItemComponent* food = item->getFood();
     std::string rawNameId = getItemRawNameId((void*)item);
-    
-    if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
-  	if(maxDamage != 0) ToolDurability(maxDamage, stack, text);
-  	if(rawNameId == "bee_nest" || rawNameId == "beehive") BeeNest(stack, text);
 
+    // Log for debugging
+    log_write("Hook triggered: item=%p, rawNameId=%s, isFood=%d, food=%p", 
+              (void*)item, rawNameId.c_str(), item->isFood() ? 1 : 0, (void*)food);
+
+    // Food tooltips - check food component directly
+    if (food != nullptr) {
+        FoodTooltips(food, text);
+        log_write("Food tooltips added: nutrition=%d, saturation=%f", 
+                  food->getNutrition(), food->getSaturationModifier());
+    }
+    
+    // Attack damage for weapons/tools
+    AttackDamage((void*)item, text);
+    
+    // Armor value for armor pieces
+    ArmorValue((void*)item, text);
+    
+    // Tool durability
+    if (maxDamage != 0) {
+        ToolDurability(maxDamage, stack, text);
+    }
+    
+    // Bee nest/hive
+    if (rawNameId == "bee_nest" || rawNameId == "beehive") {
+        BeeNest(stack, text);
+    }
+
+    // Item ID display
     std::string ns = getItemNamespace((void*)item);
     short id = getItemId((void*)item);
     if (!ns.empty() || !rawNameId.empty()) {
@@ -287,4 +503,13 @@ static void mod_init() {
     miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    
+    // Hook food items (for when Item vtable patch doesn't work)
+    miniAPI::hook::vtable("libminecraftpe.so","13FoodItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","19SuspiciousStewItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    
+    // Hook armor items
+    miniAPI::hook::vtable("libminecraftpe.so","13ArmorItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11SwordItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10AxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
 }
