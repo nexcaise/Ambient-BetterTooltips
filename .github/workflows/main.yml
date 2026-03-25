@@ -46,7 +46,7 @@ jobs:
       # 修复：使用NDK绝对路径，避免环境变量识别失败
       - name: Configure and Build
         run: |
-          xmake f -p android -a arm64-v8a --ndk=${{ steps.setup-ndk.outputs.ndk-path }} -m release -vD
+          xmake f -p android -a arm64-v8a --ndk=${{ steps.setup-ndk.outputs.ndk-path }} -m release -y -vD
           xmake -y -vD # 加-vD打印详细日志，出错可直接定位
 
       # 修复：先确认编译产物存在，再上传
