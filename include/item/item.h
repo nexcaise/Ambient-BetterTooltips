@@ -1,20 +1,24 @@
 #pragma once
 
-// ==================== 必要头文件与前置声明（必须保留，否则编译报错） ====================
+// 必须包含的头文件与前置声明
 #include <string>
 #include "item/IFoodItemComponent.h"
 #include "item/hashedstring.h"
 
-// 前置声明，避免循环依赖&编译报错
+// 前置声明，避免循环依赖
 class ItemStackBase;
 
-// ==================== Item类定义（虚函数索引100%匹配你Hook的55号位置） ====================
+// 偏移量全局声明（与main.cpp的缓存变量对应，安全读取成员）
+extern int mRawNameId_offset;
+extern int mNamespace_offset;
+extern short mId_offset;
+
 class Item {
 public:
-    // 虚函数表索引 0：虚析构函数（必须放在第一个，default实现避免链接错误）
+    // 虚函数表索引 0：虚析构函数
     virtual ~Item() = default;
 
-    // 虚函数表索引 1-18：占位纯虚函数（顺序不可修改，保证后续虚函数索引正确）
+    // 虚函数表索引 1-18：占位纯虚函数（顺序不可修改，保证索引正确）
     virtual void vfunc_01() = 0;
     virtual void vfunc_02() = 0;
     virtual void vfunc_03() = 0;
@@ -34,7 +38,7 @@ public:
     virtual void vfunc_17() = 0;
     virtual void vfunc_18() = 0;
 
-    // 虚函数表索引 19：你用到的isFood函数（顺序不可修改，与MC原生类一致）
+    // 虚函数表索引 19：isFood函数
     virtual bool isFood() const;
 
     // 虚函数表索引 20-24：占位纯虚函数
@@ -44,7 +48,7 @@ public:
     virtual void vfunc_23() = 0;
     virtual void vfunc_24() = 0;
 
-    // 虚函数表索引 25：你用到的getFood函数（顺序不可修改）
+    // 虚函数表索引 25：getFood函数
     virtual IFoodItemComponent* getFood() const;
 
     // 虚函数表索引 26-35：占位纯虚函数
@@ -59,10 +63,10 @@ public:
     virtual void vfunc_34() = 0;
     virtual void vfunc_35() = 0;
 
-    // 虚函数表索引 36：你用到的getMaxDamage函数（顺序不可修改）
+    // 虚函数表索引 36：getMaxDamage函数
     virtual short getMaxDamage() const;
 
-    // 虚函数表索引 37-54：占位纯虚函数（补全到54号，保证目标函数索引正确）
+    // 虚函数表索引 37-54：占位纯虚函数（补全到54号，保证Hook索引正确）
     virtual void vfunc_37() = 0;
     virtual void vfunc_38() = 0;
     virtual void vfunc_39() = 0;
@@ -82,33 +86,19 @@ public:
     virtual void vfunc_53() = 0;
     virtual void vfunc_54() = 0;
 
-    // 虚函数表索引 55：你Hook的目标函数！！！
-    // 签名必须与你的Hook函数完全一致，不可修改参数顺序/类型
+    // 虚函数表索引 55：你Hook的目标函数，签名完全匹配
     virtual void appendFormattedHovertext(ItemStackBase* stack, void* level, std::string& text, bool flag);
 
-    // ==================== 【重要】禁止直接声明成员变量！！！ ====================
-    // 已删除 mRawNameId / mNamespace / mId 直接声明
-    // 原因：MC原生Item类中这些成员的内存偏移不是紧跟虚函数表，直接声明会导致偏移错位，访问必闪退
-    // 请使用你找到的偏移量读取成员，配套安全读取函数写在下面
+    // ==================== 安全成员读取函数（解决编译报错，无偏移闪退） ====================
+    inline HashedString& getRawNameId() const {
+        return *(HashedString*)((uintptr_t)this + mRawNameId_offset);
+    }
+
+    inline std::string& getNamespace() const {
+        return *(std::string*)((uintptr_t)this + mNamespace_offset);
+    }
+
+    inline short getId() const {
+        return *(short*)((uintptr_t)this + mId_offset);
+    }
 };
-
-// ==================== 配套安全读取函数（直接复制到main.cpp使用，无崩溃风险） ====================
-/*
-// 安全读取物品命名空间
-inline std::string get_item_namespace(Item* item, int namespace_offset) {
-    if (!item || namespace_offset == -1) return "unknown";
-    return *(std::string*)((uintptr_t)item + namespace_offset);
-}
-
-// 安全读取物品原始ID
-inline HashedString get_item_raw_name_id(Item* item, int raw_name_id_offset) {
-    if (!item || raw_name_id_offset == -1) return HashedString();
-    return *(HashedString*)((uintptr_t)item + raw_name_id_offset);
-}
-
-// 安全读取物品数字ID
-inline short get_item_id(Item* item, short id_offset) {
-    if (!item || id_offset == -1) return 0;
-    return *(short*)((uintptr_t)item + id_offset);
-}
-*/
