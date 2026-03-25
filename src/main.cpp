@@ -131,18 +131,46 @@ void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
 // Forward declarations for runtime offset discovery
 static std::string getItemRawNameId(void* item);
 
-// Attack damage vtable index - typically 37 in MCBE (after getMaxDamage at 36)
-// May need adjustment for different MCBE versions
-static const int ATTACK_DAMAGE_VTABLE_INDEX = 37;
+// Attack damage vtable index - discovered at runtime
+static int g_AttackDamageVtableIndex = -1;
+static bool g_AttackDamageDiscovered = false;
 
 void AttackDamage(void* item, std::string& text) {
     if (!item) return;
     
-    // Use vtable call with known index for getAttackDamage
-    // This is safer than direct virtual call which may have wrong index
-    float damage = callVfunc<float>(item, ATTACK_DAMAGE_VTABLE_INDEX);
+    std::string rawNameId = getItemRawNameId(item);
     
-    // Only show if damage is reasonable (between base fist 1.0 and max weapon ~20)
+    // Only check weapons/tools (skip items without damage like food, blocks)
+    if (rawNameId.find("sword") == std::string::npos &&
+        rawNameId.find("axe") == std::string::npos &&
+        rawNameId.find("pickaxe") == std::string::npos &&
+        rawNameId.find("shovel") == std::string::npos &&
+        rawNameId.find("hoe") == std::string::npos &&
+        rawNameId != "trident" &&
+        rawNameId != "mace") {
+        return;
+    }
+    
+    // Try to discover the correct vtable index for getAttackDamage
+    if (!g_AttackDamageDiscovered) {
+        // Scan vtable indices 36-60 to find getAttackDamage
+        // It should return a reasonable damage value (0.5 - 15.0 for most weapons)
+        for (int idx = 36; idx < 60; idx++) {
+            float damage = callVfunc<float>(item, idx);
+            if (damage > 0.5f && damage < 20.0f) {
+                g_AttackDamageVtableIndex = idx;
+                log_write("Discovered AttackDamage vtable index: %d, damage=%.1f, item=%s", 
+                          idx, damage, rawNameId.c_str());
+                break;
+            }
+        }
+        g_AttackDamageDiscovered = true;
+    }
+    
+    // Use discovered index or fallback to common value
+    int idx = g_AttackDamageVtableIndex >= 0 ? g_AttackDamageVtableIndex : 37;
+    float damage = callVfunc<float>(item, idx);
+    
     if (damage > 1.0f && damage < 20.0f) {
         text += std::format("\n§cAttack Damage: {}§r", damage);
     }
@@ -289,16 +317,21 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
     short maxDamage = item->getMaxDamage();
     IFoodItemComponent* food = item->getFood();
     std::string rawNameId = getItemRawNameId((void*)item);
+    bool isFoodItem = item->isFood();
 
     // Log for debugging
-    log_write("Hook triggered: item=%p, rawNameId=%s, isFood=%d, food=%p", 
-              (void*)item, rawNameId.c_str(), item->isFood() ? 1 : 0, (void*)food);
+    log_write("Hook triggered: rawNameId=%s, isFood=%d, food=%p, maxDamage=%d", 
+              rawNameId.c_str(), isFoodItem ? 1 : 0, (void*)food, maxDamage);
 
-    // Food tooltips - only if isFood() returns true and food pointer is valid
-    // Note: getFood() may return non-null even for non-food items due to vtable mismatch
-    // So we check isFood() first to be safe
-    if (item->isFood() && food != nullptr) {
-        FoodTooltips(food, text);
+    // Food tooltips - check if food pointer is valid and try to get nutrition
+    if (food != nullptr) {
+        int nutrition = food->getNutrition();
+        float saturation = food->getSaturationModifier();
+        log_write("Food component: nutrition=%d, saturation=%.2f", nutrition, saturation);
+        
+        if (nutrition > 0 && nutrition <= 20) {
+            FoodTooltips(food, text);
+        }
     }
     
     // Attack damage for weapons/tools
@@ -354,34 +387,13 @@ static void mod_init() {
     // Additionally try to patch _ZTV4Item directly via GlossSymbol + WriteMemory
     // to cover plain Item instances (food items) that miniAPI can't hook.
 
-    // Step 1: Try to manually patch Item's own vtable (for food items / plain Item)
-    GHandle lib = GlossOpen("libminecraftpe.so");
-    if (lib) {
-        uintptr_t item_vt = GlossSymbol(lib, "_ZTV4Item", nullptr);
-        if (item_vt) {
-            void** entries = reinterpret_cast<void**>(item_vt);
-            void* orig = entries[2 + 55];
-            if (orig) {
-                g_Item_appendHover_orig = orig;
-                void* hook_func = (void*)Item_appendFormattedHovertext_hook;
-                WriteMemory(&entries[2 + 55], &hook_func, sizeof(void*), true);
-                log_write("Patched _ZTV4Item slot 55, orig=%p", orig);
-            }
-        } else {
-            log_write("_ZTV4Item not found, food items won't have custom tooltips");
-        }
-        GlossClose(lib, false);
-    }
-
-    // Step 2: Hook concrete subclasses via miniAPI (always works).
-    // First hook saves orig if step 1 failed; otherwise uses tmp.
-    if (!g_Item_appendHover_orig) {
-        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    } else {
-        void* tmp = nullptr;
-        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-    }
+    // Hook Item base class (for food items and other basic items)
+    // This is the main hook that covers all items including food
+    miniAPI::hook::vtable("libminecraftpe.so","4Item",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    
+    // Hook tool/weapon subclasses (some MCBE versions need these)
     void* tmp = nullptr;
+    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
@@ -396,13 +408,7 @@ static void mod_init() {
     miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-    
-    // Hook food items (for when Item vtable patch doesn't work)
-    miniAPI::hook::vtable("libminecraftpe.so","13FoodItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","19SuspiciousStewItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-    
-    // Hook armor items
-    miniAPI::hook::vtable("libminecraftpe.so","13ArmorItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","11SwordItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","10AxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","13ArmorItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
 }
