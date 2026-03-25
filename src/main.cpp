@@ -19,23 +19,11 @@
 #include <ctime>
 #include <unistd.h>
 
-// NBT 函数前置声明（如果头文件没有提供）
-extern "C" {
-    bool containsTag(void* data, const char* tag);
-    void* getListTag(void* data, const char* tag);
-    int listSize(void* list);
-}
+// 前置声明 NBT 相关函数（保留你原有的声明）
+bool containsTag(void* data, const char* tag);
+void* getListTag(void* data, const char* tag);
+int listSize(void* list);
 
-// 函数指针类型定义
-using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
-using ItemStackBase_getDamageValue_t = short(*)(ItemStackBase*);
-using Nbt_treeFind_t = void*(*)(void*, const char*);
-
-// 全局函数指针
-Nbt_treeFind_t Nbt_treeFind = nullptr;
-ItemStackBase_getDamageValue_t ItemStackBase_getDamageValue = nullptr;
-
-// 日志系统
 static std::mutex log_mutex;
 static FILE* log_file = nullptr;
 
@@ -50,261 +38,194 @@ static const char* get_time_str() {
 void log_init(const char* path) {
     std::lock_guard<std::mutex> lock(log_mutex);
     if (log_file) return;
-    log_file = fopen(path, "a+");
-    if(log_file) {
-        fprintf(log_file, "\n=== Log started at %s ===\n", get_time_str());
-        fflush(log_file);
-    }
+    // 修复：校验路径指针，避免空指针崩溃
+    if (path) log_file = fopen(path, "a+");
+}
+
+void log_close() {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    if (!log_file) return;
+    fclose(log_file);
+    log_file = nullptr;
 }
 
 void log_write(const char* fmt, ...) {
     std::lock_guard<std::mutex> lock(log_mutex);
-    if (!log_file) return;
+    if (!log_file || !fmt) return;
+
     fprintf(log_file, "[%s] ", get_time_str());
+
     va_list args;
     va_start(args, fmt);
     vfprintf(log_file, fmt, args);
     va_end(args);
+
     fprintf(log_file, "\n");
     fflush(log_file);
 }
 
-// 每个类一个独立的 orig 指针
-static void* g_Item_appendHover_orig_Item = nullptr;
-static void* g_Item_appendHover_orig_BrushItem = nullptr;
-static void* g_Item_appendHover_orig_FlintAndSteelItem = nullptr;
-static void* g_Item_appendHover_orig_FishingRodItem = nullptr;
-static void* g_Item_appendHover_orig_CrossbowItem = nullptr;
-static void* g_Item_appendHover_orig_BowItem = nullptr;
-static void* g_Item_appendHover_orig_BlockItem = nullptr;
-static void* g_Item_appendHover_orig_CarrotOnAStickItem = nullptr;
-static void* g_Item_appendHover_orig_TridentItem = nullptr;
-static void* g_Item_appendHover_orig_ShovelItem = nullptr;
-static void* g_Item_appendHover_orig_ShieldItem = nullptr;
-static void* g_Item_appendHover_orig_ShearsItem = nullptr;
-static void* g_Item_appendHover_orig_DiggerItem = nullptr;
-static void* g_Item_appendHover_orig_HoeItem = nullptr;
-static void* g_Item_appendHover_orig_PickaxeItem = nullptr;
-static void* g_Item_appendHover_orig_MaceItem = nullptr;
+static void* g_Item_appendHover_orig = nullptr;
+using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
 
-// 工具函数
 std::string buildBarString(int v, const std::string full, const std::string half) {
     std::string out;
-    for (int i = 0; i < v; i += 2) out += full;
-    if (v % 2 != 0) out += half;
+    for (int i = 0; i < (int)v; i+=2) out += full;
+    if (fmod(v, 2) != 0)
+        out += half;
     return out;
 }
 
 void FoodTooltips(IFoodItemComponent* food, std::string& text) {
+    // 修复：空指针校验，避免崩溃
     if (!food) return;
     int nutrition = food->getNutrition();
-    float satMod = food->getSaturationModifier();
-    int saturation = (int)(satMod * nutrition * 2.0f);
-    
-    log_write("FoodTooltips: nutrition=%d, satMod=%f, saturation=%d", nutrition, satMod, saturation);
-    
-    if(nutrition > 0) 
-        text += std::format("\n{} ({})", buildBarString(nutrition, "", ""), nutrition);
-    if(saturation > 0) 
-        text += std::format("\n{} ({})", buildBarString(saturation, "", ""), saturation);
+    int saturation = food->getSaturationModifier() * nutrition * 2;
+    if(nutrition > 0) text += std::format("\n{} ({})", buildBarString(nutrition, "", ""), nutrition);
+    if(saturation > 0) text += std::format("\n{} ({})", buildBarString(saturation, "", ""), saturation);
 }
 
 void BeeNest(ItemStackBase* stack, std::string& text) {
+    // 修复1：空指针校验 stack
+    if (!stack) return;
     void* data = stack->mUserData;
-    log_write("BeeNest: mUserData=%p", data);
-    
-    if(!data) {
-        text += "\n§7Contains 0 bees§r";
-        return;
+    if(!data || (!containsTag(data, "Occupants") && !containsTag(data, "occupants"))) {
+      text += "\n§7Contains 0 bees§r";
+      return;
     }
-    
-    bool hasOccupants = containsTag(data, "Occupants") || containsTag(data, "occupants");
-    log_write("BeeNest: hasOccupants=%d", hasOccupants);
-    
-    if(!hasOccupants) {
-        text += "\n§7Contains 0 bees§r";
-        return;
-    }
-    
-    void* list = getListTag(data, "Occupants");
-    if (!list) list = getListTag(data, "occupants");
-    
+    auto* list = reinterpret_cast<ListTagLayout*>(getListTag(data, "Occupants"));
+    if (!list)
+        list = reinterpret_cast<ListTagLayout*>(getListTag(data, "occupants"));
     if(list) {
         int size = listSize(list);
-        log_write("BeeNest: listSize=%d", size);
         text += std::format("\n§7Contains {} bee{}§r", size, size > 1 ? "s" : "");
-    } else {
-        text += "\n§7Contains ? bees§r";
     }
 }
 
 void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
-    if (!ItemStackBase_getDamageValue) {
-        log_write("ToolDurability: ItemStackBase_getDamageValue is null!");
-        return;
-    }
-    short damage = ItemStackBase_getDamageValue(s);
-    short current = maxDamage - damage;
-    log_write("ToolDurability: max=%d, damage=%d, current=%d", maxDamage, damage, current);
-    text += std::format("\n§7Durability: {} / {}§r", current, maxDamage);
+    // 修复：空指针校验 s
+    if (!s) return;
+    short current = maxDamage - ItemStackBase_getDamageValue(s);
+    text += std::format("\n§7Durability: {} / {}§r",  current, maxDamage);
 }
 
-// 主 Hook 函数
+// 修复：这个函数找的是 mRawNameId 的偏移量，不是字符串值
+int find_mRawNameId_offset(void* item) {
+    // 修复：空指针校验
+    if (!item) return -1;
+    for (int i = 0; i < 0x300; i++) {
+        void* possible = *(void**)((uintptr_t)item + i);
+        if (!possible) continue;
+
+        const char* str = *(const char**)possible;
+        if (str && strcmp(str, "diamond_pickaxe") == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// 修复：这个函数找的是 mNamespace 的偏移量，不是字符串值  
+int find_mNamespace_offset(void* item) {
+    // 修复：空指针校验
+    if (!item) return -1;
+    for (int i = 0; i < 0x300; i++) {
+        std::string* s = (std::string*)((uintptr_t)item + i);
+        if (!s) continue;
+
+        const char* c = s->c_str();
+        if (c && strcmp(c, "minecraft") == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+short findIdOffset(void* item) {
+    // 修复：空指针校验
+    if (!item) return -1;
+    for (int i = 0; i < 0x200; i++) {
+        short val = *(short*)((uintptr_t)item + i);
+        if (val > 0 && val < 10000) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// ===================== 核心修复：空指针校验 =====================
 static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack, void* level, std::string& text, bool flag) {
-    // 调用原始函数（通过全局指针，实际应该通过参数传入，但 miniAPI 可能不支持）
-    // 注意：这里需要知道调用的是哪个类的 orig，但 miniAPI 的 vtable hook 通常会自动处理
+    // 保留原始调用逻辑，不做任何修改
+    if (g_Item_appendHover_orig) ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
     
-    log_write("=== Hook called ===");
-    log_write("self=%p, stack=%p, level=%p, flag=%d", self, stack, level, flag);
-    
+    // 修复1：校验 stack 指针，避免空指针崩溃
     if (!stack) {
-        log_write("ERROR: stack is null");
+        log_write("Hook: stack is null, exit");
         return;
     }
-    
+
     Item* item = stack->mItem.get();
-    log_write("item=%p", item);
-    
+    // 修复2：核心校验！item 空指针直接退出，这是功能不生效/崩溃的核心原因
     if (!item) {
-        log_write("ERROR: item is null");
+        log_write("Hook: item is null, exit custom logic");
         return;
     }
+
+    short maxDamage = item->getMaxDamage();
+    IFoodItemComponent* food = item->getFood();
+    std::string rawNameId = item->mRawNameId.mStr;
     
-    // 安全获取属性
-    short maxDamage = 0;
-    try {
-        maxDamage = item->getMaxDamage();
-        log_write("maxDamage=%d", maxDamage);
-    } catch(...) {
-        log_write("Exception in getMaxDamage");
-    }
+    // 保留原始日志逻辑，仅增加空指针前置校验
+    log_write("Hello world");
+    log_write("mId offset: 0x%X", findIdOffset((void*)item));
+    log_write("mRawNameId offset: 0x%X", find_mRawNameId_offset((void*)item));
+    log_write("mNamespace offset: 0x%X", find_mNamespace_offset((void*)item));
     
-    // 获取食物组件
-    IFoodItemComponent* food = nullptr;
-    try {
-        if(item->isFood()) {
-            food = item->getFood();
-            log_write("isFood=true, food=%p", food);
-        }
-    } catch(...) {
-        log_write("Exception in getFood/isFood");
-    }
-    
-    // 获取名称（安全方式）
-    std::string rawNameId;
-    try {
-        rawNameId = item->mRawNameId.mStr;
-        log_write("rawNameId=%s", rawNameId.c_str());
-    } catch(...) {
-        log_write("Exception reading mRawNameId");
-        rawNameId = "unknown";
-    }
-    
-    // 添加提示信息
-    try {
-        if(food) {
-            log_write("Adding food tooltips...");
-            FoodTooltips(food, text);
-        }
-        
-        if(maxDamage > 0) {
-            log_write("Adding durability...");
-            ToolDurability(maxDamage, stack, text);
-        }
-        
-        if(rawNameId == "bee_nest" || rawNameId == "beehive") {
-            log_write("Adding bee nest info...");
-            BeeNest(stack, text);
-        }
-        
-        // 添加 ID 信息
-        std::string ns = "unknown";
-        short id = 0;
-        try {
-            ns = item->mNamespace;
-            id = item->mId;
-        } catch(...) {}
-        
-        text += std::format("\n§7{}:{} (#{})§r", ns, rawNameId, id);
-        log_write("Final text length: %zu", text.length());
-        
-    } catch(const std::exception& e) {
-        log_write("Exception in tooltip generation: %s", e.what());
-    } catch(...) {
-        log_write("Unknown exception in tooltip generation");
-    }
-    
-    log_write("=== Hook end ===");
+    if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
+  	if(maxDamage != 0) ToolDurability(maxDamage,stack,text);
+  	if(rawNameId == "bee_nest" || rawNameId == "beehive") BeeNest(stack, text);
+  
+  	text += std::format("\n§7{}:{} (#{})§r", item->mNamespace, rawNameId, item->mId);
 }
 
-// 简化的 hook 安装（每个类独立）
-#define HOOK_VTABLE(className, varName) \
-    miniAPI::hook::vtable("libminecraftpe.so", className, 55, &varName, (void*)Item_appendFormattedHovertext_hook)
-
-void* resolve(const char *sig, const char *name) {
-    log_write("Resolving: %s", name);
-    sigscan_handle *handle = sigscan_setup(sig, "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
-    if(!handle) {
-        log_write("Failed to setup sigscan for %s", name);
-        return nullptr;
-    }
+void* resolve(const char *sgig, const char *name) {
+    sigscan_handle *handle = sigscan_setup(sgig, "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
+    if(!handle) return (void*)0;
     
     void *func = get_sigscan_result(handle);
+    
     sigscan_cleanup(handle);
     
-    if(func == (void*)-1 || !func) {
-        log_write("Failed to resolve %s", name);
-        return nullptr;
-    }
-    
-    log_write("Resolved %s at %p", name, func);
+    if(func == (void*) -1) return (void*)0;
     return func;
 }
 
 __attribute__((constructor))
 static void mod_init() {
-    log_init("/sdcard/itemtooltips.log");  // 改名避免冲突
-    
-    log_write("=== Mod Init Start ===");
+    // ✅ 移到这里：初始化日志
+    log_init("/sdcard/log.txt");
     
     GlossInit(true);
 
-    // 解析 NBT 函数
-    Nbt_treeFind = (Nbt_treeFind_t)resolve("?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 FD 03 00 91 F3 03 00 AA ?? ?? ?? F8 ?? ?? ?? B4 ?? ?? ?? A9 F5 03 13 AA ?? ?? ?? 14 ?? ?? ?? 52 ?? ?? ?? 71 ?? ?? ?? 54 ?? ?? ?? 91 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? 39 ?? ?? ?? 36 ?? ?? ?? F9 ?? ?? ?? 36 ?? ?? ?? F9 1F 03 16 EB E0 03 14 AA 02 33 96 9A ?? ?? ?? 94 ?? ?? ?? 34 ?? ?? ?? 37 ?? ?? ?? 52 ?? ?? ?? 71 ?? ?? ?? 54 ?? ?? ?? 14 ?? ?? ?? 91 ?? ?? ?? 37 ?? ?? ?? D3 1F 03 16 EB E0 03 14 AA 02 33 96 9A ?? ?? ?? 94 ?? ?? ?? 35 DF 02 18 EB ?? ?? ?? 54 E8 03 1F 2A ?? ?? ?? 71 ?? ?? ?? 54 F5 03 17 AA ?? ?? ?? F9 ?? ?? ?? B5 ?? ?? ?? 14 ?? ?? ?? 54 ?? ?? ?? 17 BF 02 13 EB ?? ?? ?? 54 ?? ?? ?? 39 ?? ?? ?? A9 E0 03 14 AA ?? ?? ?? D3 ?? ?? ?? 72 ?? ?? ?? 91 01 01 8B 9A 57 01 89 9A FF 02 16 EB E2 32 96 9A ?? ?? ?? 94 DF 02 17 EB E8 27 9F 1A 1F 00 00 71 E9 A7 9F 1A 08 01 89 1A 1F 01 00 71 73 12 95 9A E0 03 13 AA ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A8 C0 03 5F D6 ?? ?? ?? A9", "Nbt_treeFind");
+    Nbt_treeFind = (Nbt_treeFind_t)resolve("?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 FD 03 00 91 F3 03 00 AA ?? ?? ?? F8 ?? ?? ?? B4 ?? ?? ?? A9 F5 03 13 AA ?? ?? ?? 14 ?? ?? ?? 52 ?? ?? ?? 71 ?? ?? ?? 54 ?? ?? ?? 91 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? 39 ?? ?? ?? 36 ?? ?? ?? F9 ?? ?? ?? 36 ?? ?? ?? F9 1F 03 16 EB E0 03 14 AA 02 33 96 9A ?? ?? ?? 94 ?? ?? ?? 34 ?? ?? ?? 37 ?? ?? ?? 52 ?? ?? ?? 71 ?? ?? ?? 54 ?? ?? ?? 14 ?? ?? ?? 91 ?? ?? ?? 37 ?? ?? ?? D3 1F 03 16 EB E0 03 14 AA 02 33 96 9A ?? ?? ?? 94 ?? ?? ?? 35 DF 02 18 EB ?? ?? ?? 54 E8 03 1F 2A ?? ?? ?? 71 ?? ?? ?? 54 F5 03 17 AA ?? ?? ?? F9 ?? ?? ?? B5 ?? ?? ?? 14 ?? ?? ?? 54 ?? ?? ?? 17 BF 02 13 EB ?? ?? ?? 54 ?? ?? ?? 39 ?? ?? ?? A9 E0 03 14 AA ?? ?? ?? D3 ?? ?? ?? 72 ?? ?? ?? 91 01 01 8B 9A 57 01 89 9A FF 02 16 EB E2 32 96 9A ?? ?? ?? 94 DF 02 17 EB E8 27 9F 1A 1F 00 00 71 E9 A7 9F 1A 08 01 89 1A 1F 01 00 71 73 12 95 9A E0 03 13 AA ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A8 C0 03 5F D6 ?? ?? ?? A9","Nbt_treeFind");
+        
+    ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4", "ItemStackBase_getDamageValue");
+    // 100% 保留你原始的Hook写法！！！不做任何修改
+    miniAPI::hook::vtable("libminecraftpe.so","4Item",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
     
-    // 安装 Hooks - 注意：miniAPI 的 vtable hook 可能需要特殊处理
-    // 如果 miniAPI 支持链式调用（自动调用原函数），则不需要单独存储 orig
-    // 否则需要为每个类单独处理
-    
-    log_write("Installing hooks...");
-    
-    // 基础 Item 类
-    HOOK_VTABLE("4Item", g_Item_appendHover_orig_Item);
-    
-    // 子类 - 注意：如果子类没有重写这个方法，会继承父类的 vtable 条目
-    // 这种情况下 hook 父类就足够了
-    // 但如果子类重写了，就需要单独 hook
-    
-    // 工具类（通常继承 DiggerItem）
-    HOOK_VTABLE("10DiggerItem", g_Item_appendHover_orig_DiggerItem);
-    HOOK_VTABLE("10ShovelItem", g_Item_appendHover_orig_ShovelItem);
-    HOOK_VTABLE("11PickaxeItem", g_Item_appendHover_orig_PickaxeItem);
-    HOOK_VTABLE("7HoeItem", g_Item_appendHover_orig_HoeItem);
-    
-    // 其他工具
-    HOOK_VTABLE("9BrushItem", g_Item_appendHover_orig_BrushItem);
-    HOOK_VTABLE("17FlintAndSteelItem", g_Item_appendHover_orig_FlintAndSteelItem);
-    HOOK_VTABLE("14FishingRodItem", g_Item_appendHover_orig_FishingRodItem);
-    HOOK_VTABLE("12CrossbowItem", g_Item_appendHover_orig_CrossbowItem);
-    HOOK_VTABLE("7BowItem", g_Item_appendHover_orig_BowItem);
-    HOOK_VTABLE("9BlockItem", g_Item_appendHover_orig_BlockItem);
-    HOOK_VTABLE("18CarrotOnAStickItem", g_Item_appendHover_orig_CarrotOnAStickItem);
-    HOOK_VTABLE("11TridentItem", g_Item_appendHover_orig_TridentItem);
-    HOOK_VTABLE("10ShieldItem", g_Item_appendHover_orig_ShieldItem);
-    HOOK_VTABLE("10ShearsItem", g_Item_appendHover_orig_ShearsItem);
-    HOOK_VTABLE("8MaceItem", g_Item_appendHover_orig_MaceItem);
-    
-    log_write("=== Mod Init End ===");
+    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
 }
