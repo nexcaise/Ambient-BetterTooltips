@@ -240,78 +240,51 @@ static void mod_init() {
         
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    // Hook appendFormattedHovertext by directly patching vtable entries.
-    // Unlike inline hooking, this keeps the original function body intact —
-    // g_Item_appendHover_orig is the real function address (no trampoline),
-    // so calling it reliably preserves vanilla behavior (attack damage, etc.).
-    //
-    // Strategy: read vtable slot 55 from many subclasses, find the most
-    // common function address (base Item implementation), then patch ALL
-    // vtable entries that point to it.
+    // --- Hook appendFormattedHovertext ---
+    // Primary method: miniAPI::hook::vtable (proven working for subclasses).
+    // Additionally try to patch _ZTV4Item directly via GlossSymbol + WriteMemory
+    // to cover plain Item instances (food items) that miniAPI can't hook.
+
+    // Step 1: Try to manually patch Item's own vtable (for food items / plain Item)
     GHandle lib = GlossOpen("libminecraftpe.so");
     if (lib) {
-        static const char* vtable_syms[] = {
-            "_ZTV4Item",
-            "_ZTV9BrushItem", "_ZTV9BlockItem", "_ZTV10DiggerItem",
-            "_ZTV7BowItem", "_ZTV7HoeItem", "_ZTV10ShovelItem",
-            "_ZTV10ShearsItem", "_ZTV10ShieldItem", "_ZTV11TridentItem",
-            "_ZTV11PickaxeItem", "_ZTV8MaceItem", "_ZTV12CrossbowItem",
-            "_ZTV17FlintAndSteelItem", "_ZTV14FishingRodItem",
-            "_ZTV18CarrotOnAStickItem",
-            nullptr
-        };
-
-        uintptr_t vtables[16] = {};
-        void* addrs[16] = {};
-        int count = 0;
-
-        for (int i = 0; vtable_syms[i] && count < 16; i++) {
-            uintptr_t vt = GlossSymbol(lib, vtable_syms[i], nullptr);
-            if (vt) {
-                void** entries = reinterpret_cast<void**>(vt);
-                void* func = entries[2 + 55];
-                if (func) {
-                    log_write("vtable %s slot 55 -> %p", vtable_syms[i], func);
-                    vtables[count] = vt;
-                    addrs[count] = func;
-                    count++;
-                }
+        uintptr_t item_vt = GlossSymbol(lib, "_ZTV4Item", nullptr);
+        if (item_vt) {
+            void** entries = reinterpret_cast<void**>(item_vt);
+            void* orig = entries[2 + 55];
+            if (orig) {
+                g_Item_appendHover_orig = orig;
+                void* hook_func = (void*)Item_appendFormattedHovertext_hook;
+                WriteMemory(&entries[2 + 55], &hook_func, sizeof(void*), true);
+                log_write("Patched _ZTV4Item slot 55, orig=%p", orig);
             }
-        }
-
-        // Find the most common address (base Item::appendFormattedHovertext)
-        void* base_func = nullptr;
-        int best_freq = 0;
-        for (int i = 0; i < count; i++) {
-            int freq = 0;
-            for (int j = 0; j < count; j++) {
-                if (addrs[j] == addrs[i]) freq++;
-            }
-            if (freq > best_freq) {
-                best_freq = freq;
-                base_func = addrs[i];
-            }
-        }
-
-        if (base_func) {
-            // Save the real original function pointer (direct address, no trampoline)
-            g_Item_appendHover_orig = base_func;
-            void* hook_func = (void*)Item_appendFormattedHovertext_hook;
-
-            // Patch every vtable that uses the base function
-            int patched = 0;
-            for (int i = 0; i < count; i++) {
-                if (addrs[i] == base_func) {
-                    void** entries = reinterpret_cast<void**>(vtables[i]);
-                    WriteMemory(&entries[2 + 55], &hook_func, sizeof(void*), true);
-                    patched++;
-                }
-            }
-            log_write("Patched %d/%d vtables, base func=%p", patched, count, base_func);
         } else {
-            log_write("Failed to find appendFormattedHovertext");
+            log_write("_ZTV4Item not found, food items won't have custom tooltips");
         }
-
         GlossClose(lib, false);
     }
+
+    // Step 2: Hook concrete subclasses via miniAPI (always works).
+    // First hook saves orig if step 1 failed; otherwise uses tmp.
+    if (!g_Item_appendHover_orig) {
+        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    } else {
+        void* tmp = nullptr;
+        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    }
+    void* tmp = nullptr;
+    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
 }
