@@ -39,7 +39,7 @@ void BeeNest(ItemStackBase* stack, std::string& text) {
         list = reinterpret_cast<ListTagLayout*>(getListTag(data, "occupants"));
     if(list) {
         int size = listSize(list);
-        text += std::format("\n§7Contains {} bee{}§r", size, size > 1 ?? "s" : "");
+        text += std::format("\n§7Contains {} bee{}§r", size, size > 1 ? "s" : "");
     }
 }
 
@@ -65,8 +65,8 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
   	text += std::format("\n§7{}:{} (#{})§r", item->mNamespace, rawNameId, item->mId);
 }
 
-void* resolve(const* char sig, const* char name) {
-    sigscan_handle *handle = sigscan_setup(sig, "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
+void* resolve(const char *sgig, const char *name) {
+    sigscan_handle *handle = sigscan_setup(sgig, "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
     if(!scannersiji) return;
     
     void *func = get_sigscan_result(handle);
