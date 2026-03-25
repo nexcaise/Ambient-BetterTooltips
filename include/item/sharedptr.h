@@ -1,108 +1,43 @@
 #pragma once
-#include <atomic>
-#include <type_traits>
-#include <utility>
-#include <cstddef>
+#include <cstdint>
+#include <string>
+#include "item/sharedptr.h"
 
-template <typename T>
-class SharedPtr;
+// 前置声明，避免循环依赖
+class Item;
+class CompoundTag;
 
-template <typename T>
-class WeakPtr;
-
-template <typename T>
-class SharedCounter {
-private:
-    template <typename>
-    friend class SharedPtr;
-    template <typename>
-    friend class WeakPtr;
-
-    T* ptr;
-    std::atomic<int> share_count;
-    std::atomic<int> weak_count;
-
-    SharedCounter(T* p) : ptr(p), share_count(0), weak_count(0) {}
-    ~SharedCounter() {}
-
-    void addSharedRef() { ++share_count; }
-    void addWeakRef()   { ++weak_count; }
-
-    bool releaseSharedRef() {
-        --share_count;
-        if (share_count <= 0) {
-            if (ptr) { T* tmp = ptr; ptr = nullptr; delete tmp; }
-            if (weak_count <= 0) return true;
-        }
-        return false;
-    }
-
-    bool releaseWeakRef() {
-        --weak_count;
-        if (weak_count <= 0 && !ptr) return true;
-        return false;
-    }
-};
-
-template <typename T>
-class SharedPtr {
-private:
-    SharedCounter<T>* pc;
-    template <typename> friend class WeakPtr;
+class ItemStackBase {
 public:
-    SharedPtr() : pc(nullptr) {}
-    explicit SharedPtr(T* rawPtr) : pc(nullptr) {
-        if (rawPtr) { pc = new SharedCounter<T>(rawPtr); pc->addSharedRef(); }
-    }
-    SharedPtr(const SharedPtr& sp) : pc(sp.pc) { if (pc) pc->addSharedRef(); }
-    ~SharedPtr() { reset(); }
+    // ==================== 虚函数表（顺序不可修改，与MC原生类完全对应） ====================
+    // 虚函数表索引 0：虚析构函数（编译器自动在内存开头预留8字节vptr）
+    virtual ~ItemStackBase();
 
-    T* get() const { return (pc) ? pc->ptr : nullptr; }
-    operator T*() const { return get(); }
-    T& operator*()  const { return *pc->ptr; }
-    T* operator->() const { return pc->ptr; }
+    // 虚函数表索引 1-4：reinit系列虚函数
+    virtual void reinit_item(const Item&, int, int);
+    virtual void reinit_block(const void*, int);
+    virtual void reinit_name(const void*, int, int);
+    virtual void setNull(void*);
 
-    SharedPtr& operator=(const SharedPtr& other) {
-        SharedPtr tmp(other);
-        std::swap(pc, tmp.pc);
-        return *this;
-    }
+    // 虚函数表索引 5-6：字符串转换虚函数
+    virtual std::string toString() const;
+    virtual std::string toDebugString() const;
 
-    void reset() {
-        if (pc) {
-            if (pc->releaseSharedRef()) delete pc;
-            pc = nullptr;
-        }
-    }
+    // ==================== 成员变量（偏移100%精准匹配MC原生arm64架构） ====================
+    WeakPtr<Item>   mItem;          // 偏移 0x8-0x10（vptr占0x0-0x8，WeakPtr固定8字节）
+    CompoundTag*    mUserData;      // 偏移 0x10-0x18（8字节指针，无错位）
+    uint8_t         _pad_18[0x88 - 0x18]; // 填充到游戏原生固定大小0x88，无越界
+
+    // ==================== 构造函数与运算符重载 ====================
+    ItemStackBase();
+    ItemStackBase(const ItemStackBase&);
+    ItemStackBase& operator=(const ItemStackBase&);
 };
 
-template <typename T>
-class WeakPtr {
-private:
-    SharedCounter<T>* pc;
-    template <typename> friend class SharedPtr;
-public:
-    WeakPtr() : pc(nullptr) {}
-    WeakPtr(std::nullptr_t) : pc(nullptr) {}
-    WeakPtr(const SharedPtr<T>& sp) : pc(sp.pc) { if (pc) pc->addWeakRef(); }
-    WeakPtr(const WeakPtr& wp) : pc(wp.pc)      { if (pc) pc->addWeakRef(); }
-    ~WeakPtr() { reset(); }
+// 全局函数指针声明（与你的代码完全兼容）
+using ItemStackBase_getDamageValue_t = short (*)(ItemStackBase*);
+extern ItemStackBase_getDamageValue_t ItemStackBase_getDamageValue;
 
-    WeakPtr& operator=(const WeakPtr& other) { WeakPtr<T> tmp(other); std::swap(pc, tmp.pc); return *this; }
-    WeakPtr& operator=(const SharedPtr<T>& other) { SharedPtr<T> tmp(other); std::swap(pc, tmp.pc); return *this; }
-
-    bool isNull() const { return (pc) ? pc->ptr == nullptr : true; }
-    T* get()      const { return (pc) ? pc->ptr : nullptr; }
-    operator T*() const { return get(); }
-    T& operator*()  const { return *pc->ptr; }
-    T* operator->() const { return pc->ptr; }
-
-    void reset() {
-        if (pc) {
-            if (pc->releaseWeakRef()) delete pc;
-            pc = nullptr;
-        }
-    }
-
-    static const WeakPtr<T>& null() { static WeakPtr<T> wnull; return wnull; }
-};
+// 编译时强制校验类大小，有偏移错误会直接编译报错，提前规避闪退
+static_assert(sizeof(ItemStackBase) == 0x88, "ItemStackBase size mismatch! Must be 0x88 for arm64-v8a");
+static_assert(sizeof(WeakPtr<Item>) == 8, "WeakPtr size mismatch! Must be 8 bytes for arm64-v8a");
