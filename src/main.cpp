@@ -59,24 +59,7 @@ void log_write(const char* fmt, ...) {
     fflush(log_file);
 }
 
-
-
 static void* g_Item_appendHover_orig = nullptr;
-static void* g_BrushItem_appendHover_orig = nullptr;
-static void* g_FlintAndSteelItem_appendHover_orig = nullptr;
-static void* g_FishingRodItem_appendHover_orig = nullptr;
-static void* g_CrossbowItem_appendHover_orig = nullptr;
-static void* g_BowItem_appendHover_orig = nullptr;
-static void* g_BlockItem_appendHover_orig = nullptr;
-static void* g_CarrotOnAStickItem_appendHover_orig = nullptr;
-static void* g_TridentItem_appendHover_orig = nullptr;
-static void* g_ShovelItem_appendHover_orig = nullptr;
-static void* g_ShieldItem_appendHover_orig = nullptr;
-static void* g_ShearsItem_appendHover_orig = nullptr;
-static void* g_DiggerItem_appendHover_orig = nullptr;
-static void* g_HoeItem_appendHover_orig = nullptr;
-static void* g_PickaxeItem_appendHover_orig = nullptr;
-static void* g_MaceItem_appendHover_orig = nullptr;
 using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
 
 std::string buildBarString(int v, const std::string full, const std::string half) {
@@ -96,7 +79,7 @@ void FoodTooltips(IFoodItemComponent* food, std::string& text) {
 
 void BeeNest(ItemStackBase* stack, std::string& text) {
     void* data = stack->mUserData;
-    if(!data || !containsTag(data, "Occupants") && !containsTag(data, "occupants")) {
+    if(!data || (!containsTag(data, "Occupants") && !containsTag(data, "occupants"))) {
       text += "\n§7Contains 0 bees§r";
       return;
     };
@@ -114,69 +97,125 @@ void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
     text += std::format("\n§7Durability: {} / {}§r",  current, maxDamage);
 }
 
-int find_mRawNameId(void* item) {
-    for (int i = 0; i < 0x300; i++) {
-        void* possible = *(void**)((uintptr_t)item + i);
-        if (!possible) continue;
+// --- Item field offset discovery ---
+// Real MCBE Item class has mRawNameId (HashedString), mNamespace (std::string),
+// mId (short) at version-dependent offsets deep inside the class.
+// Discover them at runtime by scanning the first vanilla item encountered.
+//
+// Assumed layout near these fields (typical for MCBE ARM64):
+//   ... [mId: short] [padding] [mRawNameId: HashedString(40)] [mNamespace: std::string(24)] ...
+// HashedString = { uint64_t hash(8), std::string str(24), HashedString* lastMatch(8) }
+static int off_mNamespace = -1;
+static int off_mRawNameIdStr = -1;   // offset to std::string inside the HashedString
+static int off_mId = -1;
+static bool offsets_found = false;
+static int discovery_attempts = 0;
 
-        const char* str = *(const char**)possible;
-        if (str && strcmp(str, "diamond_pickaxe") == 0) {
+static int findNamespaceOffset(void* item) {
+    auto* p = reinterpret_cast<const char*>(item);
+    for (int i = 8; i <= 0x300 - 10; i++) {
+        if (memcmp(p + i, "minecraft", 10) == 0)
             return i;
+    }
+    return -1;
+}
+
+static int findRawNameIdStrOffset(void* item, int nsOffset) {
+    // std::string within HashedString is at HashedString + 8 (after the uint64_t hash)
+    // HashedString is 40 bytes total, assumed to be right before mNamespace
+    int candidate = nsOffset - 32; // nsOffset - 40 (sizeof HashedString) + 8 (hash)
+    if (candidate < 8) return -1;
+
+    auto* s = reinterpret_cast<const char*>(item) + candidate;
+    int len = 0;
+    for (int j = 0; j < 64 && s[j] != '\0'; j++) {
+        char c = s[j];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.'))
+            return -1;
+        len++;
+    }
+    return (len >= 2 && len < 64) ? candidate : -1;
+}
+
+static int findIdOffset(void* item, int hashedStringOffset) {
+    // mId (short) is typically right before the HashedString, with possible alignment padding
+    for (int delta = 2; delta <= 16; delta += 2) {
+        int off = hashedStringOffset - delta;
+        if (off < 8) break;
+        short val = *reinterpret_cast<short*>((uintptr_t)item + off);
+        if (val > 0 && val < 2000) {
+            // Verify bytes between mId end and HashedString start are zero (padding)
+            bool padded = true;
+            for (int j = off + 2; j < hashedStringOffset; j++) {
+                if (*reinterpret_cast<uint8_t*>((uintptr_t)item + j) != 0) {
+                    padded = false;
+                    break;
+                }
+            }
+            if (padded) return off;
         }
     }
     return -1;
 }
 
-int find_mNamespace(void* item) {
-    for (int i = 0; i < 0x300; i++) {
-        std::string* s = (std::string*)((uintptr_t)item + i);
-        if (!s) continue;
+static void tryDiscoverOffsets(void* item) {
+    if (offsets_found || discovery_attempts > 100) return;
+    discovery_attempts++;
 
-        const char* c = s->c_str();
-        if (c && strcmp(c, "minecraft") == 0) {
-            return i;
-        }
-    }
-    return -1;
+    int ns = findNamespaceOffset(item);
+    if (ns < 0) return; // not a vanilla item, will retry on next call
+
+    off_mNamespace = ns;
+    off_mRawNameIdStr = findRawNameIdStrOffset(item, ns);
+
+    int hsOffset = ns - 40; // start of HashedString
+    if (hsOffset >= 8)
+        off_mId = findIdOffset(item, hsOffset);
+
+    offsets_found = true;
+    log_write("Offsets discovered: mNamespace=0x%X mRawNameIdStr=0x%X mId=0x%X",
+              off_mNamespace, off_mRawNameIdStr, off_mId);
 }
 
-short findIdOffset(void* item) {
-    for (int i = 0; i < 0x200; i++) {
-        short val = *(short*)((uintptr_t)item + i);
-        if (val > 0 && val < 10000) {
-            return i;
-        }
-    }
-    return -1;
+static std::string getItemNamespace(void* item) {
+    if (off_mNamespace < 0) return "";
+    return *reinterpret_cast<std::string*>((uintptr_t)item + off_mNamespace);
+}
+
+static std::string getItemRawNameId(void* item) {
+    if (off_mRawNameIdStr < 0) return "";
+    return *reinterpret_cast<std::string*>((uintptr_t)item + off_mRawNameIdStr);
+}
+
+static short getItemId(void* item) {
+    if (off_mId < 0) return -1;
+    return *reinterpret_cast<short*>((uintptr_t)item + off_mId);
 }
 
 static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack, void* level, std::string& text, bool flag) {
     if (g_Item_appendHover_orig) ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
     
-    if (!stack) return;
-    
     Item* item = stack->mItem.get();
     if (!item) return;
-    
+
+    tryDiscoverOffsets((void*)item);
+
     short maxDamage = item->getMaxDamage();
     IFoodItemComponent* food = item->getFood();
-    std::string rawNameId = item->mRawNameId.mStr;
-    
-    
-    
-    log_write("Hello world");
-    log_write("mId offset: 0x%X", findIdOffset((void*)item));
-    log_write("mRawNameId offset: 0x%X", find_mRawNameId((void*)item));
-    log_write("mNamespace offset: 0x%X", find_mNamespace((void*)item));
-    log_write("Actual namespace: %s", item->mNamespace.c_str());
-    log_write("Actual rawNameId: %s", item->mRawNameId.mStr.c_str());
-    log_write("Actual id: %d", item->mId);
+    std::string rawNameId = getItemRawNameId((void*)item);
     
     if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
-  	if(maxDamage != 0) ToolDurability(maxDamage,stack,text);
+  	if(maxDamage != 0) ToolDurability(maxDamage, stack, text);
   	if(rawNameId == "bee_nest" || rawNameId == "beehive") BeeNest(stack, text);
-  
-  	text += std::format("\n§7{}:{} (#{})§r", item->mNamespace, rawNameId, item->mId);
+
+    std::string ns = getItemNamespace((void*)item);
+    short id = getItemId((void*)item);
+    if (!ns.empty() || !rawNameId.empty()) {
+        if (id >= 0)
+            text += std::format("\n§7{}:{} (#{})§r", ns, rawNameId, id);
+        else
+            text += std::format("\n§7{}:{}§r", ns, rawNameId);
+    }
 }
 
 void* resolve(const char *sgig, const char *name) {
@@ -200,21 +239,23 @@ static void mod_init() {
         
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    miniAPI::hook::vtable("libminecraftpe.so","4Item",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    
-    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_BrushItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_FlintAndSteelItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_FishingRodItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&g_CrossbowItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&g_BowItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&g_BlockItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&g_CarrotOnAStickItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&g_TridentItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&g_ShovelItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&g_ShieldItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&g_ShearsItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&g_DiggerItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_HoeItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_PickaxeItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_MaceItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    // NOTE: Can't hook "4Item" - Item is abstract (has pure virtuals), so its vtable
+    // symbol (_ZTV4Item) may not exist in the binary. Hook concrete subclasses instead.
+    // For complete coverage of ALL items, consider inline hooking appendFormattedHovertext
+    // by finding its address via sig scanning and using GlossHook.
+    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
 }

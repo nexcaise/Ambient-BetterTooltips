@@ -1,14 +1,11 @@
 #pragma once
 
 #include "item/IFoodItemComponent.h"
-#include "item/hashedstring.h"
 
+// NOTE: Item is a large game class. Data members (mRawNameId, mNamespace, mId)
+// are at version-dependent offsets deep inside the class, NOT right after the vptr.
+// Access them via runtime offset discovery (see main.cpp) instead of direct members.
 class Item {
-public:
-    HashedString mRawNameId;
-    std::string mNamespace;
-    short mId;
-
 public:
     virtual ~Item();
     virtual void vfunc1()  = 0;
