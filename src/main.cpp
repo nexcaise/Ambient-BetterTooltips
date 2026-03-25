@@ -59,10 +59,24 @@ void log_write(const char* fmt, ...) {
     fflush(log_file);
 }
 
-log_init("/sdcard/log.txt");
 
 
 static void* g_Item_appendHover_orig = nullptr;
+static void* g_BrushItem_appendHover_orig = nullptr;
+static void* g_FlintAndSteelItem_appendHover_orig = nullptr;
+static void* g_FishingRodItem_appendHover_orig = nullptr;
+static void* g_CrossbowItem_appendHover_orig = nullptr;
+static void* g_BowItem_appendHover_orig = nullptr;
+static void* g_BlockItem_appendHover_orig = nullptr;
+static void* g_CarrotOnAStickItem_appendHover_orig = nullptr;
+static void* g_TridentItem_appendHover_orig = nullptr;
+static void* g_ShovelItem_appendHover_orig = nullptr;
+static void* g_ShieldItem_appendHover_orig = nullptr;
+static void* g_ShearsItem_appendHover_orig = nullptr;
+static void* g_DiggerItem_appendHover_orig = nullptr;
+static void* g_HoeItem_appendHover_orig = nullptr;
+static void* g_PickaxeItem_appendHover_orig = nullptr;
+static void* g_MaceItem_appendHover_orig = nullptr;
 using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
 
 std::string buildBarString(int v, const std::string full, const std::string half) {
@@ -139,7 +153,11 @@ short findIdOffset(void* item) {
 static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack, void* level, std::string& text, bool flag) {
     if (g_Item_appendHover_orig) ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
     
+    if (!stack) return;
+    
     Item* item = stack->mItem.get();
+    if (!item) return;
+    
     short maxDamage = item->getMaxDamage();
     IFoodItemComponent* food = item->getFood();
     std::string rawNameId = item->mRawNameId.mStr;
@@ -148,8 +166,11 @@ static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack,
     
     log_write("Hello world");
     log_write("mId offset: 0x%X", findIdOffset((void*)item));
-    log_write("Namespace full: %s", find_mRawNameId((void*)item).c_str());
-    log_write("Namespace: %s", find_mNamespace((void*)item).c_str());
+    log_write("mRawNameId offset: 0x%X", find_mRawNameId((void*)item));
+    log_write("mNamespace offset: 0x%X", find_mNamespace((void*)item));
+    log_write("Actual namespace: %s", item->mNamespace.c_str());
+    log_write("Actual rawNameId: %s", item->mRawNameId.mStr.c_str());
+    log_write("Actual id: %d", item->mId);
     
     if(item->isFood() && food != nullptr) FoodTooltips(food, text); 
   	if(maxDamage != 0) ToolDurability(maxDamage,stack,text);
@@ -173,6 +194,7 @@ void* resolve(const char *sgig, const char *name) {
 __attribute__((constructor))
 static void mod_init() {
     GlossInit(true);
+    log_init("/sdcard/log.txt");
 
     Nbt_treeFind = (Nbt_treeFind_t)resolve("?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 FD 03 00 91 F3 03 00 AA ?? ?? ?? F8 ?? ?? ?? B4 ?? ?? ?? A9 F5 03 13 AA ?? ?? ?? 14 ?? ?? ?? 52 ?? ?? ?? 71 ?? ?? ?? 54 ?? ?? ?? 91 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? 39 ?? ?? ?? 36 ?? ?? ?? F9 ?? ?? ?? 36 ?? ?? ?? F9 1F 03 16 EB E0 03 14 AA 02 33 96 9A ?? ?? ?? 94 ?? ?? ?? 34 ?? ?? ?? 37 ?? ?? ?? 52 ?? ?? ?? 71 ?? ?? ?? 54 ?? ?? ?? 14 ?? ?? ?? 91 ?? ?? ?? 37 ?? ?? ?? D3 1F 03 16 EB E0 03 14 AA 02 33 96 9A ?? ?? ?? 94 ?? ?? ?? 35 DF 02 18 EB ?? ?? ?? 54 E8 03 1F 2A ?? ?? ?? 71 ?? ?? ?? 54 F5 03 17 AA ?? ?? ?? F9 ?? ?? ?? B5 ?? ?? ?? 14 ?? ?? ?? 54 ?? ?? ?? 17 BF 02 13 EB ?? ?? ?? 54 ?? ?? ?? 39 ?? ?? ?? A9 E0 03 14 AA ?? ?? ?? D3 ?? ?? ?? 72 ?? ?? ?? 91 01 01 8B 9A 57 01 89 9A FF 02 16 EB E2 32 96 9A ?? ?? ?? 94 DF 02 17 EB E8 27 9F 1A 1F 00 00 71 E9 A7 9F 1A 08 01 89 1A 1F 01 00 71 73 12 95 9A E0 03 13 AA ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A8 C0 03 5F D6 ?? ?? ?? A9","Nbt_treeFind");
         
@@ -180,19 +202,19 @@ static void mod_init() {
     
     miniAPI::hook::vtable("libminecraftpe.so","4Item",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
     
-    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_BrushItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&g_FlintAndSteelItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&g_FishingRodItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&g_CrossbowItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7BowItem",55,&g_BowItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","9BlockItem",55,&g_BlockItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","18CarrotOnAStickItem",55,&g_CarrotOnAStickItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11TridentItem",55,&g_TridentItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShovelItem",55,&g_ShovelItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShieldItem",55,&g_ShieldItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10ShearsItem",55,&g_ShearsItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","10DiggerItem",55,&g_DiggerItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","7HoeItem",55,&g_HoeItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","11PickaxeItem",55,&g_PickaxeItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
+    miniAPI::hook::vtable("libminecraftpe.so","8MaceItem",55,&g_MaceItem_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
 }
