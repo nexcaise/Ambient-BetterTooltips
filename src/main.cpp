@@ -4,9 +4,9 @@
 #include <format>
 #include <string>
 #include <miniAPI.h>
-#include <nise/stub.h>
+#include <Gloss.h>
+
 #include <memscan.h>
-#include <inlinehook.h>
 
 #include "nbt/nbt.h"
 #include "item/item.h"
@@ -19,48 +19,6 @@
 #include <mutex>
 #include <ctime>
 #include <unistd.h>
-
-static std::mutex log_mutex;
-static FILE* log_file = nullptr;
-
-static const char* get_time_str() {
-    static char buf[64];
-    time_t t = time(nullptr);
-    tm* tm_info = localtime(&t);
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm_info);
-    return buf;
-}
-
-void log_init(const char* path) {
-    std::lock_guard<std::mutex> lock(log_mutex);
-    if (log_file) return;
-    log_file = fopen(path, "a+");
-}
-
-void log_close() {
-    std::lock_guard<std::mutex> lock(log_mutex);
-    if (!log_file) return;
-    fclose(log_file);
-    log_file = nullptr;
-}
-
-void log_write(const char* fmt, ...) {
-    std::lock_guard<std::mutex> lock(log_mutex);
-    if (!log_file) return;
-
-    fprintf(log_file, "[%s] ", get_time_str());
-
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(log_file, fmt, args);
-    va_end(args);
-
-    fprintf(log_file, "\n");
-    fflush(log_file);
-}
-
-log_init("/sdcard/log.txt");
-
 
 static void* g_Item_appendHover_orig = nullptr;
 using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
@@ -82,7 +40,7 @@ void FoodTooltips(IFoodItemComponent* food, std::string& text) {
 
 void BeeNest(ItemStackBase* stack, std::string& text) {
     void* data = stack->mUserData;
-    if(!data || !containsTag(data, "Occupants") && !containsTag(data, "occupants")) {
+    if(!data || (!containsTag(data, "Occupants") && !containsTag(data, "occupants"))) {
       text += "\n§7Contains 0 bees§r";
       return;
     };
@@ -100,46 +58,90 @@ void ToolDurability(short maxDamage, ItemStackBase* s, std::string& text) {
     text += std::format("\n§7Durability: {} / {}§r",  current, maxDamage);
 }
 
-int find_mRawNameId(void* item) {
-    for (int i = 0; i < 0x300; i++) {
-        void* possible = *(void**)((uintptr_t)item + i);
-        if (!possible) continue;
+static int off_mNamespace = -1;
+static int off_mRawNameIdStr = -1;
+static int off_mId = -1;
+static bool offsets_found = false;
+static int discovery_attempts = 0;
 
-        const char* str = *(const char**)possible;
-        if (str && strcmp(str, "diamond_pickaxe") == 0) {
+static int findNamespaceOffset(void* item) {
+    auto* p = reinterpret_cast<const char*>(item);
+    for (int i = 8; i <= 0x300 - 10; i++) {
+        if (memcmp(p + i, "minecraft", 10) == 0)
             return i;
+    }
+    return -1;
+}
+
+static int findRawNameIdStrOffset(void* item, int nsOffset) {
+    int candidate = nsOffset - 32;
+    if (candidate < 8) return -1;
+
+    auto* s = reinterpret_cast<const char*>(item) + candidate;
+    int len = 0;
+    for (int j = 0; j < 64 && s[j] != '\0'; j++) {
+        char c = s[j];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.'))
+            return -1;
+        len++;
+    }
+    return (len >= 2 && len < 64) ? candidate : -1;
+}
+
+static int findIdOffset(void* item, int hashedStringOffset) {
+    for (int delta = 2; delta <= 64; delta += 2) {
+        int off = hashedStringOffset - delta;
+        if (off < 8) break;
+        short val = *reinterpret_cast<short*>((uintptr_t)item + off);
+        if (val > 0 && val < 2000) {
+            return off;
         }
     }
     return -1;
 }
 
-int find_mNamespace(void* item) {
-    for (int i = 0; i < 0x300; i++) {
-        std::string* s = (std::string*)((uintptr_t)item + i);
-        if (!s) continue;
+static void tryDiscoverOffsets(void* item) {
+    if (offsets_found || discovery_attempts > 100) return;
+    discovery_attempts++;
 
-        const char* c = s->c_str();
-        if (c && strcmp(c, "minecraft") == 0) {
-            return i;
-        }
+    int ns = findNamespaceOffset(item);
+    if (ns < 0) return;
+
+    off_mNamespace = ns;
+    off_mRawNameIdStr = findRawNameIdStrOffset(item, ns);
+
+    if (off_mRawNameIdStr > 0) {
+        int hsStart = (off_mRawNameIdStr - 9) & ~7;
+        if (hsStart >= 8)
+            off_mId = findIdOffset(item, hsStart);
     }
-    return -1;
+
+    offsets_found = true;
 }
 
-short findIdOffset(void* item) {
-    for (int i = 0; i < 0x200; i++) {
-        short val = *(short*)((uintptr_t)item + i);
-        if (val > 0 && val < 10000) {
-            return i;
-        }
-    }
-    return -1;
+static std::string getItemNamespace(void* item) {
+    if (off_mNamespace < 0) return "";
+    return reinterpret_cast<const char*>((uintptr_t)item + off_mNamespace);
+}
+
+static std::string getItemRawNameId(void* item) {
+    if (off_mRawNameIdStr < 0) return "";
+    return reinterpret_cast<const char*>((uintptr_t)item + off_mRawNameIdStr);
+}
+
+static short getItemId(void* item) {
+    if (off_mId < 0) return -1;
+    return *reinterpret_cast<short*>((uintptr_t)item + off_mId);
 }
 
 static void Item_appendFormattedHovertext_hook(void* self, ItemStackBase* stack, void* level, std::string& text, bool flag) {
     if (g_Item_appendHover_orig) ((Item_appendHover_t)g_Item_appendHover_orig)(self, stack, level, text, flag);
     
     Item* item = stack->mItem.get();
+    if (!item) return;
+
+    tryDiscoverOffsets((void*)item);
+
     short maxDamage = item->getMaxDamage();
     IFoodItemComponent* food = item->getFood();
     std::string rawNameId = getItemRawNameId((void*)item);
@@ -220,7 +222,7 @@ static void mod_init() {
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
     HookItem();
-    
+
     void* tmp = nullptr;
     miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);

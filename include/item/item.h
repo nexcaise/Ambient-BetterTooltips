@@ -2,6 +2,9 @@
 
 #include "item/IFoodItemComponent.h"
 
+// NOTE: Item is a large game class. Data members (mRawNameId, mNamespace, mId)
+// are at version-dependent offsets deep inside the class, NOT right after the vptr.
+// Access them via runtime offset discovery (see main.cpp) instead of direct members.
 class Item {
 public:
     virtual ~Item();
