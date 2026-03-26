@@ -181,7 +181,7 @@ static void hookVtable(void* obj) {
         return;
 
     if (!g_Item_appendHover_orig)
-        g_Item_appendHover_orig = (Item_appendHover_t)vtable[55];
+        g_Item_appendHover_orig = (void*)vtable[55];
 
     size_t pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t addr = (uintptr_t)&vtable[55];
