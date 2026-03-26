@@ -197,7 +197,7 @@ static void* Item_hook(void* self, std::string const& nameId, short id) {
 }
 
 void HookItem() {
-    sigscan_handle *handle = sigscan_setup("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? 39 ?? ?? ?? 34 ?? ?? ?? 12", "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
+    sigscan_handle *handle = sigscan_setup("FF C3 03 D1 FD 7B 09 A9 FC 6F 0A A9 FA 67 0B A9 F8 5F 0C A9 F6 57 0D A9 F4 4F 0E A9 FD 43 02 91 48 D0 3B D5 49 3C 01 F0", "libminecraftpe.so", GPWN_SIGSCAN_XMEM);
     if(!handle) return;
     
     void *func = get_sigscan_result(handle);
@@ -219,42 +219,10 @@ static void mod_init() {
         
     ItemStackBase_getDamageValue = (ItemStackBase_getDamageValue_t)resolve("?? ?? ?? D1 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? A9 ?? ?? ?? 91 ?? ?? ?? D5 ?? ?? ?? F9 ?? ?? ?? F8 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4 ?? ?? ?? F9 ?? ?? ?? B4","ItemStackBase_getDamageValue");
     
-    // --- Hook appendFormattedHovertext ---
-    // Primary method: miniAPI::hook::vtable (proven working for subclasses).
-    // Additionally try to patch _ZTV4Item directly via GlossSymbol + WriteMemory
-    // to cover plain Item instances (food items) that miniAPI can't hook.
-
-    // Step 1: Try to manually patch Item's own vtable (for food items / plain Item)
-    /*GHandle lib = GlossOpen("libminecraftpe.so");
-    if (lib) {
-        uintptr_t item_vt = GlossSymbol(lib, "_ZTV4Item", nullptr);
-        if (item_vt) {
-            void** entries = reinterpret_cast<void**>(item_vt);
-            void* orig = entries[2 + 55];
-            if (orig) {
-                g_Item_appendHover_orig = orig;
-                void* hook_func = (void*)Item_appendFormattedHovertext_hook;
-                WriteMemory(&entries[2 + 55], &hook_func, sizeof(void*), true);
-                log_write("Patched _ZTV4Item slot 55, orig=%p", orig);
-            }
-        } else {
-            log_write("_ZTV4Item not found, food items won't have custom tooltips");
-        }
-        GlossClose(lib, false);
-    }*/
-
-    // Step 2: Hook concrete subclasses via miniAPI (always works).
-    // First hook saves orig if step 1 failed; otherwise uses tmp.
-//    if (!g_Item_appendHover_orig) {
-//        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&g_Item_appendHover_orig,(void*)Item_appendFormattedHovertext_hook);
-//    } else {
-//        void* tmp = nullptr;
-//        miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
-//    }
-
     HookItem();
-
+    
     void* tmp = nullptr;
+    miniAPI::hook::vtable("libminecraftpe.so","9BrushItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","17FlintAndSteelItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","14FishingRodItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);
     miniAPI::hook::vtable("libminecraftpe.so","12CrossbowItem",55,&tmp,(void*)Item_appendFormattedHovertext_hook);

@@ -1,6 +1,7 @@
 name: Build
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
@@ -25,11 +26,6 @@ jobs:
       - name: Clone NiseAPI
         run: |
           git clone https://github.com/Lodingglue/nise-api.git niseAPI
-          
-
-      - name: Clone MiniAPI
-        run: |
-          git clone https://github.com/NexCaise/Ambient-MiniAPI.git miniAPI
 
       - name: Configure and Build
         run: |
