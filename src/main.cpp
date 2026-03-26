@@ -7,6 +7,7 @@
 #include <Gloss.h>
 
 #include <memscan.h>
+#include <inlinehook.h>
 
 #include "nbt/nbt.h"
 #include "item/item.h"
@@ -19,6 +20,7 @@
 #include <mutex>
 #include <ctime>
 #include <unistd.h>
+#include <sys/mman.h>
 
 static void* g_Item_appendHover_orig = nullptr;
 using Item_appendHover_t = void(*)(void*, ItemStackBase*, void*, std::string&, bool);
@@ -172,15 +174,11 @@ void* resolve(const char *sgig, const char *name) {
     return func;
 }
 
-static void* (*Item_orig)(void*, std::string const&, short) = nullptr;
+static void hookVtable(void* obj) {
+    void** vtable = *(void***)obj;
 
-static void* Item_hook(void* self, std::string const& nameId, short id) {
-    void* _self = Item_orig(self, nameId, id);
-
-    void** vtable = *(void***)_self;
-
-    if (vtable[55] == (void*)&Item_appendFormattedHovertext_hook)
-        return _self;
+    if (vtable[55] == (void*)Item_appendFormattedHovertext_hook)
+        return;
 
     if (!g_Item_appendHover_orig)
         g_Item_appendHover_orig = (Item_appendHover_t)vtable[55];
@@ -190,12 +188,16 @@ static void* Item_hook(void* self, std::string const& nameId, short id) {
     uintptr_t pageStart = addr & ~(pageSize - 1);
 
     mprotect((void*)pageStart, pageSize, PROT_READ | PROT_WRITE | PROT_EXEC);
-
-    vtable[55] = (void*)&Item_appendFormattedHovertext_hook;
-
+    vtable[55] = (void*)Item_appendFormattedHovertext_hook;
     mprotect((void*)pageStart, pageSize, PROT_READ | PROT_EXEC);
+}
 
-    return _self;
+static void* (*Item_orig)(void*, std::string const&, short) = nullptr;
+
+static void* Item_hook(void* self, std::string const& nameId, short id) {
+    void* obj = Item_orig(self, nameId, id);
+    if (obj) hookVtable(obj);
+    return obj;
 }
 
 void HookItem() {
