@@ -16,7 +16,9 @@ target("BetterTooltips")
     set_kind("shared")
     add_packages("miniapi")
     add_linkdirs("niseAPI/libs/arm64-v8a")
-    add_links("nise", "log")
+    add_linkdirs("libs/arm64-v8a")
+    add_links("log","GlossHook")
+    add_links("nise")
 
     add_files("src/*.cpp", "src/**/*.cpp", "niseAPI/deps/gamepwnage/src/*.c", "niseAPI/deps/gamepwnage/src/**/*.c")
 
